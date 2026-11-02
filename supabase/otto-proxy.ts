@@ -1809,6 +1809,27 @@ async function settle<T>(p: Promise<T>): Promise<{ ok: true; v: T } | { ok: fals
   try { return { ok: true, v: await p }; } catch (e) { return { ok: false, error: (e as Error).message }; }
 }
 
+/* v5.0.2 (2 Nov 2026): TradingView's daily quota kept tripping because every open Desk polled the alerts list about once a
+   minute all session. The list is only worth fetching while Otto is guarding a trade, so: (1) at most one TradingView alerts
+   call per 5 minutes (shared by every open Desk, kept in otto_settings "alerts_cache"); (2) none at all unless at least one
+   armed trade carries a protective stop (exit.stop_order_id) — with nothing protected the poll answers from the saved copy and
+   never touches TradingView. If the protected-trade lookup itself fails it is treated as "nothing protected" (no call).
+   The top-bar count (tvCount inside call()) is unchanged. */
+export const TV_ALERTS_MS = 5 * 60e3;
+async function hasProtectedTrade(): Promise<boolean> {
+  const rows = await db("otto_actions?" + OQ() + "select=id,exit&exit->>state=eq.armed&limit=20").catch(() => []);
+  return (rows || []).some((r: any) => !!r?.exit?.stop_order_id);
+}
+export async function tvAlertsPoll(): Promise<any> {
+  const ac = await setting("alerts_cache").catch(() => null);
+  if (!(await hasProtectedTrade())) return { ok: true, v: ac?.alerts ?? [], cached: true, skipped: true, note: "no protected trade — TradingView not polled" };
+  if (ac?.at && Date.now() - Date.parse(ac.at) < TV_ALERTS_MS) return { ok: true, v: ac.alerts, cached: true };
+  const r = await settle(tvBudget((async () => mcpJson(await call("tv", "mcp-tv-list-alerts", { active: true })))(), 7000, "TradingView alerts"));
+  if (r.ok) putSetting("alerts_cache", { alerts: r.v, at: new Date().toISOString() }).catch(() => {});
+  else if (ac?.alerts) return { ok: true, v: ac.alerts, cached: true, note: "saved copy — " + r.error };
+  return r;
+}
+
 async function panel() {
   const conns = await db("otto_conn?" + OQ() + "select=service,connected_by,connected_at,updated_at").catch(() => []);   // v5.0: this room's
   const has = (s: string) => conns.some((c: any) => c.service === s);
@@ -1844,15 +1865,8 @@ async function panel() {
     // v3.1: quotesFor() falls back to OHLCV bars when the screener is rate-limited (429).
     out.macro = MACRO; out.watch = wsyms;
     // v3.9.2: prices from Yahoo first; TradingView only fills what Yahoo couldn't price.
-    // v4.2: alerts at most every 10 minutes, shared by every open Desk (was one TradingView call per Desk per minute).
-    const alertsPart = async () => {
-      const ac = await setting("alerts_cache").catch(() => null);
-      if (ac?.at && Date.now() - Date.parse(ac.at) < 10 * 60e3) return { ok: true, v: ac.alerts, cached: true };
-      const r = await settle(tvBudget((async () => mcpJson(await call("tv", "mcp-tv-list-alerts", { active: true })))(), 7000, "TradingView alerts"));
-      if (r.ok) putSetting("alerts_cache", { alerts: r.v, at: new Date().toISOString() }).catch(() => {});
-      else if (ac?.alerts) return { ok: true, v: ac.alerts, cached: true, note: "saved copy — " + r.error };
-      return r;
-    };
+    // v5.0.2: alerts at most every 5 minutes, and only while a trade with a live protective stop is open (see tvAlertsPoll).
+    const alertsPart = () => tvAlertsPoll();
     const [yq0, al] = await Promise.all([yahooQuotes(syms), alertsPart()]);
     let qv: Record<string, any> = { ...yq0 };
     out.quotes_source = "yahoo";
