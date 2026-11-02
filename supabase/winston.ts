@@ -525,6 +525,14 @@ export function afterExit(plan: { dir: "up" | "down"; target_level: number; wron
   return { would, at: at ? new Date(at).toISOString() : null, mfe_after: mfe, mae_after: mae, mfe_after_r: perR ? round2(mfe * perR) : null, close_move: closeMove, close_move_r: perR ? round2(closeMove * perR) : null, close_under: closeUnder, bars: d.length };
 }
 export const EARLY_EXITS = ["coach_exit", "time", "trail", "breakeven"];
+export const VWAP_VARIANCE_PCT = 0.3;   // v5.0.1 (2 Nov, Ifoma: "go with your default"): the coach's reclaim variance is "a % of price"; 0.3% is the starting default.
+
+// v5.0.1: breakeven on the OPTION, not only the stock. 30 Oct TSLA 405C: the stop moved to the entry price (400.15) at +0.5R, the stock
+// came back to it and the exit was called "breakeven" — but the premium had bled 3.05 → 2.47 on the way (−$58). Once the stop has moved,
+// the money is protected on the contract too: if what the contract can be SOLD for (bid) falls to what he paid (entry fill), close it.
+export function optionFloorHit(plan: { breakeven_at?: string | null } | null | undefined, entryFill: number, bid: number | null | undefined): boolean {
+  return !!(plan && plan.breakeven_at) && num(entryFill) > 0 && num(bid) > 0 && num(bid) <= num(entryFill);
+}
 export async function scoreAfterExits(day: string, closeMin: number): Promise<number> {
   const rows: any[] = (await db(`winston_trades?day=eq.${day}&status=eq.closed&select=*&order=id.asc`)) || [];
   const todo = rows.filter((t) => EARLY_EXITS.includes(String(t.exit_reason)) && !t.plan?.after && t.closed_at && num(t.exit_under) > 0 && num(t.plan?.target_level) > 0);
@@ -1026,7 +1034,9 @@ export async function manageOpen(cfg: any, day: string, min: number, closeMin: n
     const tb = bars[String(t.ticker).toUpperCase()] || null;
     const ev = tb ? evalBars({ dir: t.plan.dir, wrong_if_level: num(t.plan.wrong_if_level), target_level: num(t.plan.target_level), stop_from_ms: t.plan.stop_from_ms }, tb, entered) : null;
     let reason: string | null = null, flags: string[] = [];
+    let q: { bid: number; ask: number } | null = null; try { q = await freshOptionQuote(t.option_id); } catch { q = null; }   // v5.0.1: read the contract first — the floor needs it
     if (ev) { reason = ev.reason === "wrong_if" && t.plan.trail ? "trail" : ev.reason === "wrong_if" && t.plan.breakeven_at ? "breakeven" : ev.reason; flags = ev.flags; }   // v4.3: a moved stop that fires is "trail" / "breakeven"
+    else if (optionFloorHit(t.plan, num(t.entry_fill), q?.bid)) { reason = "breakeven"; flags = ["option_floor"]; }   // v5.0.1: protected trade, premium back to what he paid
     else if (opt.intrabar && tb && intrabarTarget({ dir: t.plan.dir, target_level: num(t.plan.target_level) }, tb, entered)) { reason = "target"; flags = ["intrabar_touch"]; }
     else if (min >= flatMin || t.day !== day) reason = "flat_close";
     else if (w22 && tb && coachExit({ dir: t.plan.dir }, tb, entered)) { reason = "coach_exit"; flags = ["W22_indecision_then_no_new_high"]; }   // v3.36
@@ -1045,7 +1055,6 @@ export async function manageOpen(cfg: any, day: string, min: number, closeMin: n
       } catch { /* protection never stops an exit */ }
     }
     try {                                                    // still open: remember the latest mark for the app
-      const q = await freshOptionQuote(t.option_id);
       const under = (bars[String(t.ticker).toUpperCase()] || []).slice(-1)[0]?.c;
       if (q) await db(`winston_trades?id=eq.${t.id}`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify({ plan: { ...t.plan, last_mark: { bid: q.bid, ask: q.ask, under: under || null, at: new Date(nowMs()).toISOString() } } }) });
     } catch { /* a missed mark is fine */ }
@@ -1090,11 +1099,26 @@ async function reportedToday(day: string): Promise<string[]> {
 // yesterday's high/low/close and the pre-market high/low (when the broker returns extended-hours bars). Fetched once per name per day
 // and cached in winston_settings `daily_ctx`; anything that fails is "unavailable" in the prompt, never an exception.
 export function dailySummary(daily: Bar[], day: string) {
-  const d = (daily || []).filter((b) => new Date(b.t).toISOString().slice(0, 10) < day).sort((a, b) => a.t - b.t).slice(-20);
+  const all = (daily || []).filter((b) => new Date(b.t).toISOString().slice(0, 10) < day).sort((a, b) => a.t - b.t);
+  const d = all.slice(-20);
   if (d.length < 2) return null;
   const y = d[d.length - 1], c5 = d.slice(-5).map((b) => b.c);
   const trend5 = c5.length >= 2 ? (c5[c5.length - 1] > c5[0] * 1.005 ? "up" : c5[c5.length - 1] < c5[0] * 0.995 ? "down" : "flat") : "n/a";
-  return { h20: Math.max(...d.map((b) => b.h)), l20: Math.min(...d.map((b) => b.l)), trend5, y_h: y.h, y_l: y.l, y_c: y.c, days: d.length };
+  return { h20: Math.max(...d.map((b) => b.h)), l20: Math.min(...d.map((b) => b.l)), trend5, y_h: y.h, y_l: y.l, y_c: y.c, days: d.length, ...rangeLevels(all, day) };
+}
+// v5.0.1 (coach, 29 Oct, PB-1029-04): the range that matters is LAST FULL TRADING WEEK's high/low (Mon–Fri before this week);
+// the PRIOR CALENDAR MONTH's high/low is the same signal and stronger. Pure; bars are daily, dated by their UTC day.
+export function rangeLevels(daily: Bar[], day: string): { wk_h?: number; wk_l?: number; mo_h?: number; mo_l?: number } {
+  const dayOf = (b: Bar) => new Date(b.t).toISOString().slice(0, 10);
+  const dt = new Date(day + "T12:00:00Z"), dow = dt.getUTCDay();                      // 0 = Sun … 6 = Sat
+  const thisMon = addDays(day, -((dow + 6) % 7)), lastMon = addDays(thisMon, -7);    // Monday of this week / of last week
+  const wk = daily.filter((b) => dayOf(b) >= lastMon && dayOf(b) < thisMon);
+  const moStart = day.slice(0, 7) + "-01", prev = new Date(Date.UTC(dt.getUTCFullYear(), dt.getUTCMonth() - 1, 1)).toISOString().slice(0, 10);
+  const mo = daily.filter((b) => dayOf(b) >= prev && dayOf(b) < moStart);
+  const out: any = {};
+  if (wk.length >= 3) { out.wk_h = Math.max(...wk.map((b) => b.h)); out.wk_l = Math.min(...wk.map((b) => b.l)); }
+  if (mo.length >= 10) { out.mo_h = Math.max(...mo.map((b) => b.h)); out.mo_l = Math.min(...mo.map((b) => b.l)); }
+  return out;
 }
 export function premarketRange(bars5: Bar[], day: string) {
   const open = etToUtcMs(day, 570);
@@ -1108,8 +1132,11 @@ async function dailyContext(symbols: string[], day: string, reported: string[] =
   let dirty = false;
   if (missing.length) {
     let daily: Record<string, Bar[]> = {}, pm: Record<string, Bar[]> = {};
-    try { daily = parseBars(await md("rh", "get_equity_historicals", { symbols: missing.slice(0, 20), interval: "day", start_time: new Date(etToUtcMs(addDays(day, -35), 570)).toISOString() })); } catch { /* unavailable */ }
-    try { pm = parseBars(await md("rh", "get_equity_historicals", { symbols: missing.slice(0, 20), interval: "5minute", start_time: new Date(etToUtcMs(day, 240)).toISOString() })); } catch { /* unavailable */ }
+    // v5.0.1: ten names per call (30 Oct: one 20-name call came back with 14 of 19 "unavailable"); 70 days back so last month's range is in the window.
+    for (let i = 0; i < missing.length; i += 10) {
+      try { Object.assign(daily, parseBars(await md("rh", "get_equity_historicals", { symbols: missing.slice(i, i + 10), interval: "day", start_time: new Date(etToUtcMs(addDays(day, -70), 570)).toISOString() }))); } catch { /* unavailable */ }
+      try { Object.assign(pm, parseBars(await md("rh", "get_equity_historicals", { symbols: missing.slice(i, i + 10), interval: "5minute", start_time: new Date(etToUtcMs(day, 240)).toISOString() }))); } catch { /* unavailable */ }
+    }
     // v4.4: daily ATR(14) and analyst consensus, read-only, cached with the rest of the day's context (one call per 10 names / per 75 names).
     let atr: Record<string, number> = {}, an: Record<string, any> = {};
     for (let i = 0; i < missing.length; i += 10) {
@@ -1128,6 +1155,7 @@ async function dailyContext(symbols: string[], day: string, reported: string[] =
 }
 export const ctxLine = (c: any) => !c || c.unavailable ? "daily context unavailable" :
   `20d ${c.l20}-${c.h20} · 5d ${c.trend5} · yday H ${c.y_h} L ${c.y_l} C ${c.y_c}${c.pm_h != null ? ` · pre-mkt ${c.pm_l}-${c.pm_h}` : ""}` +
+  (c.wk_h != null ? ` · last full week ${c.wk_l}-${c.wk_h}` : "") + (c.mo_h != null ? ` · prior month ${c.mo_l}-${c.mo_h}` : "") +
   (c.atr14 ? ` · daily ATR14 ${c.atr14}` : "") +
   (c.an ? ` · analysts ${c.an.buy}B/${c.an.hold}H/${c.an.sell}S${c.an.target ? ", mean target " + c.an.target : ""}` : "") +
   (c.er ? ` · last report ${c.er.q}: EPS ${c.er.actual} vs est ${c.er.estimate}${c.er.surprise_pct != null ? " (" + (c.er.surprise_pct >= 0 ? "+" : "") + c.er.surprise_pct + "%)" : ""}` : "");
@@ -1451,6 +1479,7 @@ REPORTED EARNINGS SINCE YESTERDAY'S CLOSE (W25 waits the full 30 minutes on thes
 SPY READ (W23): ${ctx.index ? `last ${ctx.index.last} vs VWAP ${ctx.index.vwap} — ${ctx.index.above_vwap ? "above" : "below"} VWAP, closes ${ctx.index.rising ? "rising" : ctx.index.falling ? "falling" : "mixed"}` : "unavailable"}
 READ THE COACH'S POST KINDS: a "result" post (sold, trimmed, took profit, stopped) is his EXIT on that name, not a fresh entry — a tail like "and play the bounce" after a sale is not a new buy unless he gives a new level. A "level" post names where he SELLS TO or buys from; do not enter a call within $0.50 of a level he sells into (W21). Let price come to you (W20): no re-entry on a name above where the last trade got out. Don't chase a move that's done (W26): a name already down big today is not a fresh put.
 SPREAD (v4.3): the bid/ask spread is your biggest cost — $757 paid in spread against $591 net profit so far. Prefer liquid names; a contract wider than 8% of mid is only taken on a coach call, and 15% is the wall. Each snapshot row carries "context": the 20-day range, 5-day trend, yesterday's high/low/close and the pre-market range — the chart the coach reads.
+COACH'S RULES OF 29 OCT (brain PB-1029-01…09, now with the numbers to use): VWAP RECLAIM (02) — price lost VWAP and closed back above it; allow a variance of ${VWAP_VARIANCE_PCT}% of price around VWAP (the coach: a % of price, flexed by order blocks and sentiment; this is the starting default) and enter AFTER the reclaim, as a trigger. VWAP FLATTENS after earnings (01/06) — trade the retrace to VWAP that holds, not the opening pop. PRE-MARKET HIGH/LOW (03) — a 10-minute close through the pre-market high can open a NEW long, through the pre-market low a NEW short (the coach confirmed a new trade is fine; W3 still means no adding). RANGE BREAK (04) — a close through LAST FULL WEEK's low can take puts, through its high can take calls; the PRIOR MONTH's range is the same signal and stronger. Each snapshot row's "context" now carries both ranges when the broker returned them.
 TRIGGERS (v4.3): if your entry needs a 10-minute CLOSE through a level first (the coach's "above X" / "below X", a reclaim, a break), put it in trigger_level and the code waits for the close — never enter ahead of a trigger you name. ${armed.waiting ? `${armed.waiting} armed idea(s) are already waiting for their trigger. ` : ""}${armed.fired.length ? `Armed and fired this tick: ${armed.fired.join(", ")}. ` : ""}${armed.dropped.length ? `Armed and dropped this tick: ${armed.dropped.join(", ")}. ` : ""}${(ctx.reported || []).length ? `EXPIRED: callouts on ${ctx.reported!.join(", ")} were written before their earnings — re-read those names fresh from today's bars and context only.` : ""}
 Decide now. Act on NEW coach posts (take or pass, with a reason) and on any idea of your own that the chart and brain support.`;
     let out: any, usage = { input: 0, output: 0 };

@@ -87,11 +87,11 @@ async function fakeDb(path: string, init: RequestInit = {}) {
 
 /* ---------------- fake market (the gateway) ---------------- */
 type Opt = { bid: number; ask: number; delta: number; vol: number; oi: number; strike: number; exp?: string; type?: string; at?: string };
-const W: { spot: Record<string, number>; prev: Record<string, number>; bars: Record<string, any[]>; opts: Record<string, Opt>; calendar: any[]; calls: { service: string; tool: string }[]; ai: { n: number; last: any } } =
+const W: { spot: Record<string, number>; prev: Record<string, number>; bars: Record<string, any[]>; opts: Record<string, Opt>; calendar: any[]; calls: { service: string; tool: string; args?: any }[]; ai: { n: number; last: any } } =
   { spot: {}, prev: {}, bars: {}, opts: {}, calendar: [], calls: [], ai: { n: 0, last: null } };
 const barRow = (isoStart: string, o: number, h: number, l: number, c: number, v = 1000) => ({ begins_at: isoStart, open_price: String(o), high_price: String(h), low_price: String(l), close_price: String(c), volume: v });
 function fakeMd(service: string, tool: string, args: any) {
-  W.calls.push({ service, tool });
+  W.calls.push({ service, tool, args });
   const guard = (globalThis as any).__ALLOW_ORDER_TOOLS;
   if (!guard && /place_|cancel_|exercise|(^|[^a-z])review_|portfolio|positions|get_option_orders|get_equity_orders|pnl|accounts/.test(tool)) throw new Error("TEST FAIL: Winston called " + tool);
   if (tool === "get_equity_quotes") return { data: { results: args.symbols.filter((s: string) => W.spot[s]).map((s: string) => ({ quote: { symbol: s, last_trade_price: String(W.spot[s]), adjusted_previous_close: String(W.prev[s] ?? W.spot[s]) } })) } };
@@ -1306,4 +1306,59 @@ Deno.test("v4.8.6 PREP switch: off = skipped before the open; on = he reads and 
   await X.setEnabled({ prep_on: false });
   setNow("2026-10-14T14:11:00Z"); await X.tick();
   assert(/YOUR PRE-OPEN PREP/.test(W.ai.last.user) && /\[id 1 NEW\]/.test(W.ai.last.user), "the open tick sees the prep notes and the post as NEW");
+});
+
+/* =========================== v5.0.1 (2 Nov 2026): option-price breakeven, last-week / prior-month ranges, batched context =========================== */
+Deno.test("v5.0.1 optionFloorHit: only a protected trade (stop moved) closes when the contract's bid is back to what he paid", () => {
+  eq(X.optionFloorHit({ breakeven_at: null }, 2.5, 2.4), false, "unprotected: no floor, the stock-level stop decides");
+  eq(X.optionFloorHit({ breakeven_at: "2026-10-30T15:00:04Z" }, 2.5, 2.4), true, "protected and bid ≤ entry fill: close");
+  eq(X.optionFloorHit({ breakeven_at: "2026-10-30T15:00:04Z" }, 2.5, 2.5), true, "exactly what he paid counts");
+  eq(X.optionFloorHit({ breakeven_at: "2026-10-30T15:00:04Z" }, 2.5, 2.55), false, "still above: hold");
+  eq(X.optionFloorHit({ breakeven_at: "2026-10-30T15:00:04Z" }, 2.5, null), false, "no quote = no decision");
+  eq(X.optionFloorHit(null, 2.5, 1), false, "no plan");
+});
+Deno.test("v5.0.1 replay (TSLA 30 Oct): the stock holds above the moved stop but the premium bleeds back to the entry fill -> 'breakeven' exit at ~0, flagged option_floor", async () => {
+  seed(); setNow("2026-10-14T14:11:00Z"); await setupCall(); await X.tick();          // NVDA 200C bought at 2.50, entry 200, wrong-if 198 (R = 2), target 204
+  // 10:21: a dip in the premium BEFORE any protection does nothing (the stock-level stop decides)
+  setNow("2026-10-14T14:21:00Z"); W.opts.opt1.bid = 2.3; W.opts.opt1.ask = 2.4; aiScript = null; await X.tick();
+  eq(TABLES.winston_trades[0].status, "open", "unprotected: a cheaper bid is not a floor");
+  // 10:31: the 10:20 bar ran to 201.2 (+0.6R) -> breakeven moves the stop to 200; premium is up, still open
+  setNow("2026-10-14T14:31:00Z"); W.bars.NVDA.push(barRow("2026-10-14T14:20:00Z", 200, 201.2, 199.8, 201)); W.opts.opt1.bid = 3.0; W.opts.opt1.ask = 3.1; await X.tick();
+  const t1 = TABLES.winston_trades[0]; eq([t1.status, t1.plan.wrong_if_level, !!t1.plan.breakeven_at], ["open", 200, true], "stop moved to the entry price, trade still on");
+  // 10:41: the 10:30 bar closes at 200.6 — ABOVE the moved stop, no stock-level exit — but the bid has bled to 2.45 ≤ 2.50 paid
+  setNow("2026-10-14T14:41:00Z"); W.bars.NVDA.push(barRow("2026-10-14T14:30:00Z", 201, 201.3, 200.4, 200.6)); W.opts.opt1.bid = 2.45; W.opts.opt1.ask = 2.55; await X.tick();
+  const c = TABLES.winston_trades[0];
+  eq([c.status, c.exit_reason, c.exit_fill, c.pnl_realistic], ["closed", "breakeven", 2.45, -5], "closed on the contract floor at -$5, not left to bleed to the stock stop");
+  assert(c.flags.includes("option_floor") && c.flags.includes("stamp:breakeven"), "flagged option_floor + stamp:breakeven: " + JSON.stringify(c.flags));
+});
+Deno.test("v5.0.1 rangeLevels: last FULL trading week (Mon–Fri before this week) and the PRIOR calendar month; thin data gives nothing; ctxLine prints both", () => {
+  const b = (d: string, h: number, l: number) => ({ t: RealDate.parse(d + "T13:30:00Z"), o: 1, h, l, c: 1, v: 1 });
+  const bars: any[] = [];
+  // September 2026 (prior month for a 14 Oct day): 22 bars, high 150 on the 10th, low 100 on the 22nd
+  for (let i = 1; i <= 30; i++) { const d = new Date(Date.UTC(2026, 8, i)); if (d.getUTCDay() % 6) bars.push(b(d.toISOString().slice(0, 10), i === 10 ? 150 : 120, i === 22 ? 100 : 110)); }
+  // Oct 5–9 (last full week before Wed 14 Oct): high 135 Thu, low 118 Mon; Oct 12–13 this week: wild bars that must NOT count
+  bars.push(b("2026-10-05", 125, 118), b("2026-10-06", 128, 120), b("2026-10-07", 130, 121), b("2026-10-08", 135, 122), b("2026-10-09", 132, 123), b("2026-10-12", 199, 50), b("2026-10-13", 199, 50));
+  eq(X.rangeLevels(bars, "2026-10-14"), { wk_h: 135, wk_l: 118, mo_h: 150, mo_l: 100 }, "last full week Oct 5–9; prior month September");
+  eq(X.rangeLevels(bars, "2026-10-05"), { wk_h: 120, wk_l: 110, mo_h: 150, mo_l: 100 }, "on Monday the 5th, last week is Sept 28–Oct 2 (five September bars)");
+  eq(X.rangeLevels(bars.slice(-7), "2026-10-14"), { wk_h: 135, wk_l: 118 }, "fewer than 10 bars in the prior month = no monthly range (never a made-up number)");
+  eq(X.rangeLevels([], "2026-10-14"), {}, "nothing = nothing");
+  const s: any = X.dailySummary(bars, "2026-10-14");
+  eq([s.wk_h, s.wk_l, s.mo_h, s.mo_l, s.days], [135, 118, 150, 100, 20], "dailySummary carries the ranges and still reads 20 days for the 20d range");
+  assert(/last full week 118-135 · prior month 100-150/.test(X.ctxLine(s)), "the one-line context names both ranges: " + X.ctxLine(s));
+  assert(!/last full week/.test(X.ctxLine({ h20: 1, l20: 0, trend5: "up", y_h: 1, y_l: 0, y_c: 1 })), "no range, no words");
+});
+Deno.test("v5.0.1 dailyContext fetches daily + 5-minute bars ten names per call (never a 20-name slice), and the tick prompt carries the coach's 29 Oct rules with the 0.3% default", async () => {
+  seed(); setNow("2026-10-14T14:11:00Z"); await setupCall();
+  const u = ["NVDA", "TSLA", "AAPL", "MSFT", "META", "AMZN", "GOOGL", "AMD", "PLTR", "MU", "IWM", "HOOD", "COIN", "AVGO", "ORCL", "NFLX", "UBER", "SPY", "QQQ", "WMT", "ABBV", "AMGN"];
+  TABLES.winston_settings.find((r) => r.key === "config").value.universe = u;
+  for (const s of u) { W.spot[s] = 100; W.prev[s] = 100; }
+  W.calls.length = 0; aiScript = () => ({ decisions: [], passes: [] });
+  await X.tick();
+  const ctxCalls = W.calls.filter((c) => c.tool === "get_equity_historicals" && /^(day|5minute)$/.test(String(c.args?.interval)));
+  const sizes = ctxCalls.map((c) => (c.args?.symbols || []).length);
+  assert(ctxCalls.filter((c) => c.args.interval === "day").length >= 2 && ctxCalls.filter((c) => c.args.interval === "5minute").length >= 2 && sizes.every((n) => n <= 10) && Math.max(...sizes) === 10,
+    "context bars come ten names per call, as many calls as it takes: " + JSON.stringify(ctxCalls.map((c) => [c.args.interval, (c.args.symbols || []).length])));
+  assert(ctxCalls.every((c) => Date.parse(c.args.start_time) <= RealDate.parse("2026-10-14T13:30:00Z") - 69 * 864e5 || c.args.interval === "5minute"), "daily bars go 70 days back (last month's range)");
+  const prompt = String(W.ai.last?.user || JSON.stringify(W.ai.last));
+  assert(/COACH'S RULES OF 29 OCT/.test(prompt) && /0\.3% of price/.test(prompt) && /LAST FULL WEEK/.test(prompt) && /PRE-MARKET HIGH\/LOW/.test(prompt), "the rules line is in the prompt");
 });
