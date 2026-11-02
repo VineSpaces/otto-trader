@@ -122,3 +122,25 @@ Deno.test("v5.1 ears: a level the 10%-from-price gate refuses keeps its reason",
   const l = (await route("ears_state")).state.levels[0];
   assert(l.status === "skipped" && /10%|far|from/i.test(l.why || ""), "skip reason kept: " + JSON.stringify(l));
 });
+
+Deno.test("v5.2 ears → Josh + Baby J: coach's words on the Watcher row, recap post at the end, Jarvis context lists what was heard, Homework levels get the 'coach said it too' match", async () => {
+  reset(); SET.ears_mode = "auto"; await M.earsIn({ kind: "start", session: "t5" });
+  SAY = ["MU if it takes out 840 looking at puts and support 880 and QQQ weekly top 715 words words"];
+  LEV = [[L("MU", "840", "if it takes out 840, looking at puts"), L("MU", "880", "support, must hold"), L("QQQ", "715", "weekly top")]];
+  await M.earsIn(chunk("t5", 1, 8));
+  const w = WATCH.find((x) => x.ticker === "MU" && x.level === 840);
+  assert(w && w.note === '🎧 Coach, call min 8: "if it takes out 840, looking at puts"', "watch note carries the coach's words: " + JSON.stringify(w));
+  await M.earsIn({ kind: "stop", session: "t5" });
+  const rec = DESK.find((d) => d.startsWith("🎧 Call recap"))!;
+  assert(rec && /MU\s+880 support · 840 → puts/.test(rec) && /Held back: QQQ 715 \(range\)/.test(rec), "recap: " + rec);
+  assert(DESK.filter((d) => d.startsWith("🎧 Ears: listening ended")).length === 1, "old one-liner kept");
+  // Jarvis context
+  const st = (await route("ears_state")).state;
+  const blk = M.earsHeardBlock(st, "2026-10-26");
+  assert(/HEARD ON TODAY'S LIVE CALL/.test(blk) && /\[heard live, call minute 8\] MU 840 \(level\) — if it takes out 840, looking at puts/.test(blk) && /context only, not armed\] QQQ 715/.test(blk), "jarvis block: " + blk);
+  assert(M.earsHeardBlock(st, "2026-10-27") === "", "other day: nothing");
+  // Homework match: within 0.2%, same day only
+  const m = M.earsMatch(st, "2026-10-26", [{ ticker: "MU", level: 841 }, { ticker: "MU", level: 700 }, { ticker: "AAPL", level: 345 }]);
+  assert(m.length === 1 && m[0].level === 841 && m[0].min === 8 && /puts/.test(m[0].meaning), "homework match: " + JSON.stringify(m));
+  assert(M.earsMatch(st, "2026-10-27", [{ ticker: "MU", level: 840 }]).length === 0, "other day: no tag");
+});

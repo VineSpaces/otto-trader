@@ -6248,7 +6248,7 @@ ${pre}
 [👁 WATCHER TRIGGER — no one typed this; Ifoma and Josh are away from the screen.]
 ${r.ticker} level ${Number(r.level)} (${r.source === "signal" ? "a Signal level" : r.source === "scanner" ? "a level the scanner found" : "a level added on the Desk"}${r.note ? ": " + r.note : ""}).${r.source === "signal" ? (r.coach_dir ? ` The coach's direction: ${String(r.coach_dir).toUpperCase()}.` : " The coach gave this level with NO direction — the side comes from this close. Check it's with the day's move and the banner before you card it.") : ""}
 Trigger: ${TRIG_LABEL[f.trigger]} on the ${d === "up" ? "calls" : "puts"} side, on the ${f.tf}-minute bar that closed at ${etLabel(f.close_at)} ET — O ${b.o} H ${b.h} L ${b.l} C ${b.c}.${f.crossings >= 4 ? ` The 5-minute closes have crossed this level ${f.crossings} times today: treat it as chop unless the read is clear.` : ""}
-Is this a real ${d === "up" ? "call" : "put"} setup RIGHT NOW under the Otto Rules and the House Rules? The contract list above is live (server-fetched); check the banner and any binary event.
+${r.note && String(r.note).startsWith("🎧 Coach") ? `This level came from the coach's live call. START the card's summary with exactly this line: ${r.note}\n` : ""}Is this a real ${d === "up" ? "call" : "put"} setup RIGHT NOW under the Otto Rules and the House Rules? The contract list above is live (server-fetched); check the banner and any binary event.
 - Call propose_action ONCE, every time (v3.36, Ifoma: flag, never block — the people decide, not you): one opening option card. Title starts with "SCALP · " when it's a quick trade. plan.setup "${SETUP_FOR[f.trigger + "|" + d] || "other"}", plan.direction "${d}", plan.signal_level ${r.source === "signal"}, TP1 at the next level, plan.stop (wrong-if) just beyond ${Number(r.level)}, stop_option sized for their max loss. If the best contract is over buying power or the max, make the cheaper ALT too, as usual. Guardrails flag, never block.
 - plan.weak (v4.2.3, tightened): set it ONLY if the banner/read is No Edge or Choppy, or the confirmation bar already ran well past the level (a chase) — one plain sentence naming which. Thin room to TP1, a binary event or ordinary doubt go in the summary, not in weak; most cards leave weak EMPTY. When the bar already ran: say so, and say the coach's answer: wait for the retest of ${Number(r.level)} that holds; that is the entry, not the chase. The card is still built either way — flag, never block.
 - The only time there is no card: the level's direction contradicts the close (e.g. a rejection fired but the close is on the wrong side). Then say exactly why in the READ.
@@ -6445,8 +6445,25 @@ export function earsSnap(instrument: string, known: string[]): string | null {
 }
 const earsLine = (l: { ticker: string; level: number; dir: string; meaning: string }) => `${l.ticker} ${l.level}${l.dir === "up" ? " ▲" : l.dir === "down" ? " ▼" : ""} — "${String(l.meaning).replace(/"/g, "'").slice(0, 70)}"`;
 async function earsArmOne(l: EarsLevel, by: string): Promise<string> {   // "" = armed, otherwise the reason it was not
-  try { const r = await watchAdd({ ticker: l.ticker, level: l.level, dir: l.dir, source: "desk", note: ("Ears: " + l.meaning).slice(0, 160), by }); return r && r.status !== "removed" ? "" : r ? "became the wrong-if of an open trade" : "already on the Watcher"; }
+  try { const r = await watchAdd({ ticker: l.ticker, level: l.level, dir: l.dir, source: "desk", note: `🎧 Coach, call min ${Number(l.min) || 0}: "${String(l.meaning).replace(/"/g, "'")}"`.slice(0, 160), by }); return r && r.status !== "removed" ? "" : r ? "became the wrong-if of an open trade" : "already on the Watcher"; }
   catch (e) { return String((e as Error).message || "could not arm").slice(0, 90); }
+}
+/* v5.2: the one-screen recap Josh reads at the end of a call — by stock, what the coach said about each level. */
+const earsTag = (m: string) => /reclaim|recover/i.test(m) ? " reclaim" : /resistance/i.test(m) ? " resistance" : /support/i.test(m) ? " support" : /\bputs?\b/i.test(m) ? " → puts" : /\bcalls?\b/i.test(m) ? " → calls" : /target/i.test(m) ? " target" : "";
+export function earsRecap(st: EarsState, mins: number): string {
+  const lv = (st.levels || []).filter((l) => l.status !== "dismissed");
+  if (!lv.length) return "";
+  const live = lv.filter((l) => l.status === "armed" || (l.status === "draft" && !l.hold));
+  const by: Record<string, EarsLevel[]> = {}; for (const l of live) (by[l.ticker] = by[l.ticker] || []).push(l);
+  const hm = (d: string) => new Date(d).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: "America/New_York", hour12: false });
+  const tickers = Object.keys(by).sort((a, b) => by[b].length - by[a].length || a.localeCompare(b));
+  const out = [`🎧 Call recap · ${hm(st.started)}–${hm(st.ended || st.last || st.started)} · ${lv.length} level${lv.length === 1 ? "" : "s"}, ${new Set(lv.map((l) => l.ticker)).size} stock${new Set(lv.map((l) => l.ticker)).size === 1 ? "" : "s"} (${mins} min)`];
+  for (const t of tickers) out.push(`${t.padEnd(5)}${by[t].slice().sort((a, b) => b.level - a.level).map((l) => `${l.level}${earsTag(l.meaning)}`).join(" · ")}`);
+  const held = lv.filter((l) => l.status === "draft" && l.hold);
+  if (held.length) out.push("Held back: " + held.map((l) => `${l.ticker} ${l.level} (${l.kind === "range" ? "range" : "current price"})`).join(" · "));
+  const sk = lv.filter((l) => l.status === "skipped");
+  if (sk.length) out.push("Not armed: " + sk.map((l) => `${l.ticker} ${l.level} (${String(l.why || "skipped").slice(0, 40)})`).join(" · "));
+  return out.join("\n");
 }
 export async function earsIn(body: any) {
   const kind = String(body?.kind || "");
@@ -6463,6 +6480,7 @@ export async function earsIn(body: any) {
     const mins = Math.max(1, Math.round((Date.parse(st.ended) - Date.parse(st.started)) / 60000));
     const line = `${st.levels.length} level${st.levels.length === 1 ? "" : "s"} heard — ${c("armed")} armed, ${c("draft")} waiting for Arm, ${c("dismissed")} dismissed, ${c("skipped")} skipped`;
     if (st.levels.length || st.chunks) await logDesk("system", "Otto", `🎧 Ears: listening ended after ${mins} minute${mins === 1 ? "" : "s"}. ${line}${c("skipped") ? " (too far from the price or not a stock)" : ""}.`);
+    const recap = earsRecap(st, mins); if (recap) await logDesk("system", "Otto", recap);
     if (c("draft")) await notify("ears", `🎧 Ears: ${c("draft")} level${c("draft") === 1 ? "" : "s"} waiting for your Arm`, line, "./#desk").catch(() => {});
     return { ok: true, ended: true, levels: st.levels.length, armed: c("armed"), waiting: c("draft"), dismissed: c("dismissed"), skipped: c("skipped"), minutes: mins };
   }
@@ -7005,14 +7023,25 @@ export async function optionShortlist(ticker: string, side: "call" | "put") {
 }
 
 /* ---------------------------------------------------------------- what is really running right now */
+/* v5.2: Jarvis gets what the coach SAID on today's live call (same facts Winston reads), so "what did the coach say on MU?" has an answer and cards can quote it. */
+export function earsHeardBlock(st: any, day: string): string {
+  if (!st || !Array.isArray(st.levels) || etParts(new Date(st.started || 0)).date !== day) return "";
+  const lines = st.levels.filter((l: any) => l && (l.status === "armed" || l.status === "draft") && l.ticker && Number(l.level) > 0).slice(0, 40).map((l: any) => {
+    const dir = l.dir === "up" ? "break ABOVE" : l.dir === "down" ? "break BELOW" : "level";
+    const flag = l.status === "draft" ? (l.hold ? ", context only, not armed" : ", UNCONFIRMED") : "";
+    return `[heard live, call minute ${Number(l.min) || 0}${flag}] ${String(l.ticker).toUpperCase()} ${Number(l.level)} (${dir}) — ${String(l.meaning || "").replace(/\s+/g, " ").slice(0, 160)}`;
+  });
+  return lines.length ? `\nHEARD ON TODAY'S LIVE CALL (what the coach said out loud, transcribed by voice, so a number can be wrong; quote it when someone asks what he said, and when a card comes from one of these levels):\n${lines.join("\n")}` : "";
+}
 export async function runningNow(): Promise<string> {
   const day = etParts().date;
-  const [w, ch, prot, L, beat] = await Promise.all([
+  const [w, ch, prot, L, beat, earsSt] = await Promise.all([
     db(`otto_watch?select=ticker,level,dir&day=eq.${day}&status=eq.watching&limit=30`).catch(() => []),
     db(`otto_checks?select=due_at,what&status=eq.pending&order=due_at.asc&limit=10`).catch(() => []),
     db("otto_actions?" + OQ() + "select=title,exit&exit->>state=eq.armed&limit=5").catch(() => []),
     getLimits().catch(() => LIMIT_DEFAULTS),
     setting("signal_beat").catch(() => null),
+    setting("ears_state").catch(() => null),
   ]);
   const beatOk = beat?.at && Date.now() - Date.parse(beat.at) < 3 * 60e3 && beat.state === "ok";
   return `RUNNING RIGHT NOW — the ONLY things that act without a message (anything else you'd have to do with a tool, now):
@@ -7021,7 +7050,7 @@ export async function runningNow(): Promise<string> {
 - 🛡 Protected trades: ${(prot || []).length ? prot.map((r: any) => `${r.title} (Robinhood stop at $${r.exit?.stop_option}, TradingView alerts wrong-if ${r.exit?.wrong_if} / TP1 ${r.exit?.tp1})`).join("; ") : "none"}.
 - Auto-close: ${L.auto_close ? `ON — position check every ${Math.max(5, Number(L.review_min) || 15)} min while a trade is open (HOLD or CLOSE only)` : "OFF"}.
 - TradingView alert fires read every 2 min. Otto Signals watcher: ${beatOk ? "on" : "NOT reporting — signals may be missed"}.
-To make a new promise true: schedule_check (a timed look + ping) or add_watch_level (a price level). Otherwise say plainly you can't.`;
+To make a new promise true: schedule_check (a timed look + ping) or add_watch_level (a price level). Otherwise say plainly you can't.${earsHeardBlock(earsSt, day)}`;
 }
 
 /* ---------------------------------------------------------------- schedule_check */
@@ -9863,6 +9892,18 @@ export async function hkStatus(day = etParts().date, author = "Josh") {
   return { applies: true, for_day: day, due, done, late, missed: !inAt && past, pending: !inAt && !past,
     call: r?.call || null, call_why: r?.answers?.call || null, levels: (r?.levels || []).map((x: any) => ({ ticker: x.ticker, level: x.level, dir: x.dir })), grade: r?.grade || null };
 }
+/* v5.2: a Homework level within 0.2% of a level the coach said on that day's live call gets a "coach said it too" tag. */
+export function earsMatch(st: any, forDay: string, levels: any): { ticker: string; level: number; min: number; meaning: string }[] {
+  if (!st || !Array.isArray(st.levels) || !Array.isArray(levels) || etParts(new Date(st.started || 0)).date !== forDay) return [];
+  const out: any[] = [];
+  for (const m of levels) {
+    const t = String(m?.ticker || "").toUpperCase().trim(), v = Number(m?.level);
+    if (!t || !(v > 0)) continue;
+    const e = st.levels.find((l: any) => l.status !== "dismissed" && l.ticker === t && Math.abs(Number(l.level) - v) / v <= 0.002);
+    if (e) out.push({ ticker: t, level: v, min: Number(e.min) || 0, meaning: String(e.meaning || "").slice(0, 120) });
+  }
+  return out;
+}
 export async function hkGet(authorIn: any) {
   const author = hkAuthor(authorIn);
   const forDay = hkForDay(), readDay = hkPrevTradingDay(forDay);
@@ -9888,8 +9929,9 @@ export async function hkGet(authorIn: any) {
       right: r?.grade?.direction ?? null });
   }
   const last = (await db(`otto_homework?select=for_day,call,answers,levels,grade&author=eq.${encodeURIComponent(author)}&grade=not.is.null&order=for_day.desc&limit=1`).catch(() => []))?.[0] || null;
+  const ears_match = earsMatch(await setting("ears_state").catch(() => null), forDay, row?.levels);
   return { ok: true, author, for_day: forDay, read_day: readDay, due: hkDue(forDay), clock: marketClock().status, steps: HK_STEPS, calls: HK_CALLS, min: HK_MIN,
-    row, data, errors, week, last_graded: last, since };
+    row, data, errors, week, last_graded: last, since, ears_match };
 }
 export async function hkSave(b: any) {
   const author = hkAuthor(b?.author), forDay = hkForDay();

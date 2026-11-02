@@ -2726,7 +2726,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.1.0";
+const BUILD="5.2.0";
 const ROUTINE=[
  {n:1,title:"The bond market",src:"The 10-year live, plus the official close",calls:[{k:"t10"}]},
  {n:2,title:"One currency pair",src:"USD / JPY, spot",calls:[{k:"jpy"}]},
@@ -3666,6 +3666,7 @@ function dkRenderMsgs(stick){
       const done=(DK.earsHandledAt&&r.created_at<=DK.earsHandledAt)||(DK.earsDone&&DK.earsDone[r.id]);
       if(done&&!auto){h+=`<div class="dk-sys mut">🎧 Ears · ${lv.length} level${lv.length===1?"":"s"} · handled · ${dkTime(r.created_at)}</div>`;continue}
       h+=`<div class="dk-sys dk-call"><b>${esc(ls[0])}</b>\n${lv.map(x=>{const m=/^([A-Z.]{1,6}) ([\d.]+)/.exec(x);return esc(x)+(auto&&m?` <button class="dk-link" data-ears-rm="${m[1]}|${m[2]}">remove</button>`:"")}).join("\n")}<div class="mut" style="margin-top:4px">${esc(note)}</div><div class="arm">${auto?"":`<button class="dk-btn go" data-ears-arm>Arm these ${lv.length} on the Watcher</button> <button class="dk-btn" data-ears-skip>Dismiss</button>`}<span class="mut" id="earsNote"></span></div><div class="mut" style="margin-top:6px">Mode: <b>${auto?"Automatic":"Draft"}</b> · <button class="dk-link" data-ears-mode="${auto?"draft":"auto"}">${auto?"switch back to Draft":"switch to Automatic"}</button> · ${dkTime(r.created_at)}</div></div>`;continue}
+    if(r.role==="system"&&/^🎧 Call recap/.test(r.content||"")){const ls=String(r.content).split("\n");h+=`<div class="dk-sys dk-call" style="white-space:pre-wrap;text-align:left;font-family:ui-monospace,Consolas,monospace;font-size:12.5px;border-radius:12px"><b>${esc(ls[0])}</b>\n${esc(ls.slice(1).join("\n"))} · ${dkTime(r.created_at)}</div>`;continue}
     if(r.role==="system"&&/^📣 This week's callouts/.test(r.content||"")){h+=`<div class="dk-sys dk-call"><b>${esc(String(r.content).split("\n")[0])}</b>\n${esc(String(r.content).split("\n").slice(1).join("\n"))}<div class="arm"><button class="dk-btn go" data-arm-callouts>Arm these on the Watcher</button><span class="mut" id="armNote"></span></div> · ${dkTime(r.created_at)}</div>`;continue}
     if(r.role==="system"){h+=`<div class="dk-sys">${esc(r.content)} · ${dkTime(r.created_at)}</div>`;continue}
     if(r.role==="user"){const jz=/^📣/.test(r.content||"");h+=`<div class="dk-m me${jz?" jason":""}"><div class="dk-mw">${esc(r.author||"")} · ${dkTime(r.created_at)}${jz?`<span class="dk-jtag">SIGNAL</span>`:""}</div>${esc(jz?String(r.content).replace(/^📣 Jason's post \(pasted\):?\n?/,""):r.content)}</div>`;continue}
@@ -5479,13 +5480,14 @@ function alRender(stick){
    (no new storage); Arm / Dismiss send the ticked ids; nothing in the chat is deleted — hidden kinds are a
    per-device view setting (localStorage "jvHide"). */
 const JV_KINDS=[
-  {k:"ears",t:"🎧 Ears lines",d:"each minute's “Ears heard N levels” card, listening ended, mode changes, dismissed",re:/^🎧/},
+  {k:"ears",t:"🎧 Ears lines",d:"each minute's “Ears heard N levels” card, listening ended, mode changes, dismissed",re:/^🎧(?! Call recap)/},
+  {k:"recap",t:"🎧 Call recap",d:"the one-screen by-stock recap posted when a call ends",re:/^🎧 Call recap/,def:false},
   {k:"watch",t:"👁 Watcher lines",d:"armed N of M, removed, added to the Watcher, Watching…",re:/^👁/},
   {k:"charts",t:"📈 Night Charts posts",d:"the evening chart-review posts",re:/^📈/},
   {k:"callouts",t:"📣 This week's callouts",d:"the weekly list with its Arm button (the levels still arm from the Ears tab)",re:/^📣 This week's callouts/},
   {k:"wrong",t:"🎯 “Now the wrong-if” lines",d:"the one-line wrong-if updates",re:/^🎯/}
 ];
-function jvHideMap(){const m=LS.get("jvHide",null);const o={};JV_KINDS.forEach(k=>o[k.k]=m&&typeof m==="object"&&k.k in m?!!m[k.k]:true);return o}
+function jvHideMap(){const m=LS.get("jvHide",null);const o={};JV_KINDS.forEach(k=>o[k.k]=m&&typeof m==="object"&&k.k in m?!!m[k.k]:k.def!==false);return o}
 function jvHidden(r){const c=String(r.content||"");const m=jvHideMap();return JV_KINDS.some(k=>m[k.k]&&k.re.test(c))}
 function eaToday(st){if(!st||!st.started)return false;const f=d=>new Date(d).toLocaleDateString("en-CA",{timeZone:"America/New_York"});return f(st.started)===f(Date.now())}
 function eaLive(st){return !!(st&&!st.ended&&st.last&&Date.now()-Date.parse(st.last)<4*60e3)}
@@ -6548,7 +6550,7 @@ function hkRender(){
     let body="";
     if(s.id==="call")body=`<div class="hk-seg">${(j.calls||[]).map(c=>`<button data-call="${esc(c)}" class="${HK.call===c?"on "+(/bull/.test(c)?"bull":"bear"):""}">${esc(c[0].toUpperCase()+c.slice(1))}</button>`).join("")}</div>${ta("call","One sentence: why?")}`;
     else if(s.id==="earnings")body=`<div class="hk-auto">Otto filled · tonight after the close + before tomorrow's open (biggest first)</div><div class="hk-pills">${earn.length?earn.map(e=>`<span class="hk-pill" title="${esc(e.name)}">${esc(e.sym)} · ${esc(e.when)}</span>`).join(""):`<span class="mut" style="font-size:12px">${j.errors&&j.errors.earnings?"Calendar didn't load — use the Discord earnings tab.":"Nothing big on the calendar."}</span>`}</div>${ta("earnings","Which one moves the whole market, and why?")}`;
-    else if(s.id==="levels")body=`<div id="hkLevels">${(levels.length?levels:[{}]).map((x,k)=>hkLvRow(x,k)).join("")}</div><button class="dk-btn sec" id="hkAddLv" style="margin-top:4px">+ Level</button>`;
+    else if(s.id==="levels")body=`<div id="hkLevels">${(levels.length?levels:[{}]).map((x,k)=>hkLvRow(x,k)).join("")}</div>${(j.ears_match||[]).map(m=>`<div class="hk-auto" style="text-transform:none;letter-spacing:0;font-size:12px;color:#F5C451;margin-top:4px">🎧 Coach said it too — ${esc(m.ticker)} ${esc(m.level)} · call min ${esc(m.min)}: “${esc(m.meaning)}”</div>`).join("")}<button class="dk-btn sec" id="hkAddLv" style="margin-top:4px">+ Level</button>`;
     else if(s.id==="odd")body=ta("odd","Ticker + why it doesn't make sense (optional)");
     else body=(rows.some(r=>r.step===s.id)?`<div class="hk-auto">Otto filled${j.data&&j.data.market&&j.data.market.at?" · "+esc(dkTime(j.data.market.at)):""}</div><div class="hk-pills">${pills(s.id)}</div>`:"")+ta(s.id);
     return `<div class="hk-step"><div class="hk-n ${doneStep(s)?"ok":""}">${i+1}</div><div><h3>${esc(s.title)}${s.need?"":` <span class="mut" style="font-weight:400;font-size:12px">optional</span>`}</h3><div class="hk-hint">${esc(s.hint)}</div>${body}</div></div>`};
