@@ -6364,11 +6364,25 @@ const EARS_TOOL = { name: "record_levels", description: "Record price levels the
   input_schema: { type: "object", properties: { levels: { type: "array", items: { type: "object", properties: {
     instrument: { type: "string", description: "Stock ticker only (e.g. PLTR). Skip indexes futures and yields." },
     value: { type: "string", description: "The number he said, e.g. 171.5" },
-    meaning: { type: "string", description: "What he said about it, in his words, max 14 words (above/reclaim/support/resistance/below/lose...)" } },
+    meaning: { type: "string", description: "What he said about it, in his words, max 14 words (above/reclaim/support/resistance/below/lose...)" },
+    kind: { type: "string", enum: ["level", "range", "price"], description: "level = a trigger with a job (above/below/hold/reclaim/target/support/resistance). range = a weekly top/bottom or consolidation edge, context only. price = where the stock is right now, no job." } },
     required: ["instrument", "value", "meaning"] } } }, required: ["levels"] } };
-export type EarsLevel = { id: number; ticker: string; level: number; dir: string; meaning: string; min: number; status: "draft" | "armed" | "dismissed" | "skipped" };
-export type EarsState = { session: string; started: string; last: string; chunks: number; seqs: number[]; levels: EarsLevel[]; transcript: string; ended?: string | null; n?: number; unsure?: string[]; handled_at?: string };
-export async function earsMode(): Promise<"draft" | "auto"> { return (await setting("ears_mode").catch(() => null)) === "auto" ? "auto" : "draft"; }
+export type EarsLevel = { id: number; ticker: string; level: number; dir: string; meaning: string; min: number; status: "draft" | "armed" | "dismissed" | "skipped"; kind?: string; hold?: string; why?: string; said?: string };
+export type EarsState = { session: string; started: string; last: string; chunks: number; seqs: number[]; levels: EarsLevel[]; transcript: string; ended?: string | null; n?: number; unsure?: string[]; unsure_items?: { instrument: string; value: string; meaning: string; min: number }[]; handled_at?: string };
+export async function earsMode(): Promise<"draft" | "auto"> { return (await setting("ears_mode").catch(() => null)) === "draft" ? "draft" : "auto"; }   // v5.1: Automatic unless he switched it to Draft
+/* v5.1: what kind of thing was said. A level needs a job; weekly tops/bottoms are context; "where it is now" is not a trigger. Only ever HOLDS BACK (the model's own tag is a second opinion). */
+const EARS_JOB = /\b(above|below|over|under|holds?|reclaims?|targets?|support|resistance|breaks?|lose[sd]?|lost|rejects?|gap|flip|takes? out|needs? to|must|wrong if)\b/i;
+const EARS_RANGE = /\b(range|weekly (top|bottom|high|low)|consolidation)\b/i;
+const EARS_PRICE = /\b(current(ly)? price|trading (right )?(at|around)|chopping around|right now|hit \d|at \d+ bucks|this morning)\b/i;
+export function earsKind(meaning: string, llm?: string): "level" | "range" | "price" {
+  const m = String(meaning || "");
+  if (EARS_RANGE.test(m) && !/\bif (it )?(breaks?|takes? out|loses?)\b/i.test(m)) return "range";
+  if (EARS_PRICE.test(m) && !EARS_JOB.test(m.replace(EARS_PRICE, " "))) return "price";
+  return llm === "range" || llm === "price" ? llm : "level";
+}
+const earsHoldWhy = (k: string) => k === "range" ? "range — context, not a trigger (tap Arm to watch it anyway)" : k === "price" ? "where it is now, no job given (tap Arm to watch it anyway)" : "";
+const earsDec = (n: number) => (String(n).split(".")[1] || "").length;
+const earsSaid = (text: string, value: string) => { const raw = String(value).replace(/[^0-9.]/g, ""); const sent = raw ? String(text).split(/(?<=[.!?])\s+/).find((x) => x.includes(raw)) : ""; return String(sent || text).slice(0, 220); };
 /* v4.8: the tail of the previous piece rides along — as Whisper's prompt (continuity across the 60 s cut) and inside the extractor's NEWEST text
    (a list like "INTC 92, 90, 87, 95" that straddles a cut was lost on 26 Oct: 10 levels missed, mostly fast lists). Dedupe by ticker+level keeps repeats out. */
 export function earsTail(transcript: string, n = 400): string {
@@ -6404,7 +6418,7 @@ async function earsExtract(newText: string, context: string, known: string[] = [
   const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", signal: AbortSignal.timeout(40_000),
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model: MODEL, max_tokens: 1500, tools: [EARS_TOOL], tool_choice: { type: "tool", name: "record_levels" },
-      system: `You listen to a live trading call transcribed from speech (it can mishear words and tickers). Record ONLY price levels for a specific stock that the speaker clearly SAID in the NEWEST text: the stock must be named in the same sentence or the one before (a company name counts: Micron = MU, SK Hynix = SKHY), and the number must be given as support, resistance, a reclaim, a break, a target, a gap, a moving average or the line that negates the idea. Prefer these names when the speech is close to one of them: ${known.slice(0, 80).join(", ")}. Never invent or round a number, never attach a number to a stock he did not name, never record a number that is a time, a percentage, an option price, a dollar P&L or an account size, skip index futures and yields. A stray number with no clear stock is NOT a level. If unsure, leave it out. Return an empty list when there are none.`,
+      system: `You listen to a live trading call transcribed from speech (it can mishear words and tickers). Record ONLY price levels for a specific stock that the speaker clearly SAID in the NEWEST text: the stock must be named in the same sentence or the one before (a company name counts: Micron = MU, SK Hynix = SKHY), and the number must be given as support, resistance, a reclaim, a break, a target, a gap, a moving average or the line that negates the idea. Prefer these names when the speech is close to one of them: ${known.slice(0, 80).join(", ")}. Never invent or round a number, never attach a number to a stock he did not name, never record a number that is a time, a percentage, an option price, a dollar P&L or an account size, skip index futures and yields. A stray number with no clear stock is NOT a level. If unsure, leave it out. Return an empty list when there are none. A level needs a JOB (above / below / hold / reclaim / target / support / resistance): where the stock is trading right now is NOT a level (kind "price"), and weekly tops and bottoms or consolidation edges are context (kind "range"); everything else is kind "level".`,
       messages: [{ role: "user", content: `EARLIER (context only, do not record):\n${context.slice(-3000) || "(start of call)"}\n\nNEWEST:\n${newText.slice(0, 6000)}` }] }) });
   if (!r.ok) throw new Error("reading the call failed: claude HTTP " + r.status);
   const j = await r.json(); const tu = (j.content || []).find((b: any) => b.type === "tool_use");
@@ -6430,9 +6444,9 @@ export function earsSnap(instrument: string, known: string[]): string | null {
   return null;   // no fuzzy guessing: CRWD and CRWV are both real stocks one letter apart — a wrong snap is worse than an "unsure" line
 }
 const earsLine = (l: { ticker: string; level: number; dir: string; meaning: string }) => `${l.ticker} ${l.level}${l.dir === "up" ? " ▲" : l.dir === "down" ? " ▼" : ""} — "${String(l.meaning).replace(/"/g, "'").slice(0, 70)}"`;
-async function earsArmOne(l: EarsLevel, by: string): Promise<boolean> {
-  try { const r = await watchAdd({ ticker: l.ticker, level: l.level, dir: l.dir, source: "desk", note: ("Ears: " + l.meaning).slice(0, 160), by }); return !!(r && r.status !== "removed"); }
-  catch { return false; }
+async function earsArmOne(l: EarsLevel, by: string): Promise<string> {   // "" = armed, otherwise the reason it was not
+  try { const r = await watchAdd({ ticker: l.ticker, level: l.level, dir: l.dir, source: "desk", note: ("Ears: " + l.meaning).slice(0, 160), by }); return r && r.status !== "removed" ? "" : r ? "became the wrong-if of an open trade" : "already on the Watcher"; }
+  catch (e) { return String((e as Error).message || "could not arm").slice(0, 90); }
 }
 export async function earsIn(body: any) {
   const kind = String(body?.kind || "");
@@ -6471,39 +6485,49 @@ export async function earsIn(body: any) {
   const fresh: EarsLevel[] = []; const unsure: string[] = [];
   const snapped = found.map((f) => { const t = earsSnap(f.instrument, known); if (!t) unsure.push(`${String(f.instrument).slice(0, 12)} ${String(f.value).slice(0, 10)}`); return t ? { ...f, instrument: t } : null; }).filter(Boolean);
   for (const l of calloutLevels({ levels: snapped })) {
-    if (st.levels.some((x) => x.ticker === l.ticker && x.level === l.level)) continue;
+    // v5.1: same ticker within 0.2% of a level already heard = the same level (keep the first meaning, and the more precise number while it is still only a draft)
+    const near = st.levels.find((x) => x.ticker === l.ticker && Math.abs(x.level - l.level) / x.level <= 0.002);
+    if (near) { if (near.status === "draft" && earsDec(l.level) > earsDec(near.level)) near.level = l.level; continue; }
+    const src: any = (snapped as any[]).find((f) => f && String(f.instrument) === l.ticker && Number(String(f.value || "").replace(/[^0-9.]/g, "")) === l.level);
+    const kind = earsKind(l.meaning, src?.kind);
     const n = (st.n = (st.n || 0) + 1);
-    const lv: EarsLevel = { id: n, ticker: l.ticker, level: l.level, dir: l.dir, meaning: l.meaning, min: tmin, status: "draft" };
+    const lv: EarsLevel = { id: n, ticker: l.ticker, level: l.level, dir: l.dir, meaning: l.meaning, min: tmin, status: "draft", kind, said: earsSaid(text, src?.value ?? String(l.level)) };
+    if (kind !== "level") lv.hold = earsHoldWhy(kind);
     st.levels.push(lv); fresh.push(lv);
   }
   const mode = await earsMode();
-  if (fresh.length && mode === "auto") for (const l of fresh) l.status = (await earsArmOne(l, "Ears · Callouts")) ? "armed" : "skipped";
-  st.unsure = (st.unsure || []).concat(unsure).slice(-40);
+  if (fresh.length && mode === "auto") for (const l of fresh) { if (l.hold) continue; const why = await earsArmOne(l, "Ears · Callouts"); l.status = why ? "skipped" : "armed"; if (why) l.why = why; }   // v5.1: Automatic holds range / current-price ones back as drafts
+  if (unsure.length) st.unsure_items = (st.unsure_items || []).concat(found.filter((f) => !earsSnap(f.instrument, known)).map((f) => ({ instrument: String(f.instrument).slice(0, 12), value: String(f.value).slice(0, 10), meaning: String(f.meaning).slice(0, 80), min: tmin }))).filter((u, i, a) => a.findIndex((v) => v.instrument === u.instrument && v.value === u.value) === i).slice(-60);
+  st.unsure = [...new Set((st.unsure || []).concat(unsure))].slice(-40);
   await putSetting("ears_state", st, "ears");
   if (fresh.length) {
     await logDesk("system", "Otto", `🎧 Ears heard ${fresh.length} new level${fresh.length === 1 ? "" : "s"} · ${mode === "auto" ? "AUTO-ARMED" : "DRAFT"} · call minute ${tmin}\n` + fresh.map(earsLine).join("\n") +
       (unsure.length ? `\nUnsure (no known stock behind the number, not armed): ${unsure.join(", ")}` : "") +
+      (fresh.some((l) => l.hold) ? `\nHeld back as drafts (range / current price): ${fresh.filter((l) => l.hold).map((l) => l.ticker + " " + l.level).join(", ")}` : "") +
       (mode === "auto" ? `\nArmed on the Watcher at once (${fresh.filter((l) => l.status === "armed").length} of ${fresh.length}). Heard by voice, so a number can be wrong.`
         : `\nHeard by voice, so a number can be misheard. Check them, then tap.`));
     await notify("ears", `🎧 Ears heard ${fresh.length} level${fresh.length === 1 ? "" : "s"}${mode === "auto" ? " · armed" : " · tap Arm on the Desk"}`, fresh.map((l) => `${l.ticker} ${l.level}`).join(", ").slice(0, 120), "./#desk").catch(() => {});
   }
   return { ok: true, heard: text.length, new: fresh.length, unsure: unsure.length, levels: st.levels.length, waiting: st.levels.filter((l) => l.status === "draft").length, mode };
 }
-export async function earsArm(who: string) {
+const earsIds = (ids?: any): number[] | null => Array.isArray(ids) ? ids.map(Number).filter((n) => Number.isFinite(n)) : null;   // v5.1: no ids = all drafts (old behaviour); ids = only those
+export async function earsArm(who: string, ids?: any) {
   const st: EarsState | null = await setting("ears_state").catch(() => null);
-  const drafts = (st?.levels || []).filter((l) => l.status === "draft");
+  const pick = earsIds(ids);
+  const drafts = (st?.levels || []).filter((l) => l.status === "draft" && (!pick || pick.includes(l.id)));
   if (!st || !drafts.length) return { ok: true, armed: 0, skipped: 0, total: 0 };
   let armed = 0, skipped = 0;
-  for (const l of drafts) { if (await earsArmOne(l, `${String(who).slice(0, 30)} · Callouts`)) { l.status = "armed"; armed++; } else { l.status = "skipped"; skipped++; } }
-  st.handled_at = new Date().toISOString();
+  for (const l of drafts) { const why = await earsArmOne(l, `${String(who).slice(0, 30)} · Callouts`); if (!why) { l.status = "armed"; l.hold = undefined; armed++; } else { l.status = "skipped"; l.why = why; skipped++; } }
+  if (!st.levels.some((l) => l.status === "draft")) st.handled_at = new Date().toISOString();
   await putSetting("ears_state", st, "ears");
   await logDesk("system", "Otto", `👁 ${who} armed ${armed} of ${drafts.length} Ears levels from today's call on the Watcher${skipped ? ` (${skipped} skipped — too far from the live price, already there, or not a stock)` : ""}.`);
   return { ok: true, armed, skipped, total: drafts.length };
 }
-export async function earsDismiss(who: string) {
+export async function earsDismiss(who: string, ids?: any) {
   const st: EarsState | null = await setting("ears_state").catch(() => null);
-  let n = 0; for (const l of st?.levels || []) if (l.status === "draft") { l.status = "dismissed"; n++; }
-  if (st) st.handled_at = new Date().toISOString();
+  const pick = earsIds(ids);
+  let n = 0; for (const l of st?.levels || []) if (l.status === "draft" && (!pick || pick.includes(l.id))) { l.status = "dismissed"; n++; }
+  if (st && !st.levels.some((l) => l.status === "draft")) st.handled_at = new Date().toISOString();
   if (st && n) { await putSetting("ears_state", st, "ears"); await logDesk("system", "Otto", `🎧 ${who} dismissed ${n} Ears level${n === 1 ? "" : "s"}.`); }
   return { ok: true, dismissed: n };
 }
@@ -6516,6 +6540,28 @@ export async function earsRemove(who: string, ticker: string, level: number) {  
   l.status = "dismissed"; await putSetting("ears_state", st, "ears");
   await logDesk("system", "Otto", `👁 ${who} removed ${ticker} ${level} (Ears) from the Watcher.`);
   return { ok: true, removed: (rows || []).length };
+}
+export async function earsFix(who: string, instrument: string, ticker: string) {   // v5.1: "LEN was really ___" — turn the unsure numbers for that spoken name into real levels
+  const T = String(ticker || "").toUpperCase().replace(/[^A-Z.]/g, "").slice(0, 6);
+  if (!/^[A-Z]{1,5}$/.test(T)) throw new Error("need a ticker, e.g. LEN");
+  const inst = String(instrument || "").toUpperCase().trim().slice(0, 12);
+  const st: EarsState | null = await setting("ears_state").catch(() => null);
+  if (!st) return { ok: true, added: 0 };
+  const items = (st.unsure_items || []).filter((u) => String(u.instrument).toUpperCase().trim() === inst);
+  let added = 0, armed = 0;
+  for (const l of calloutLevels({ levels: items.map((u) => ({ instrument: T, value: u.value, meaning: u.meaning })) })) {
+    if (st.levels.some((x) => x.ticker === l.ticker && Math.abs(x.level - l.level) / x.level <= 0.002)) continue;
+    const n = (st.n = (st.n || 0) + 1), kind = earsKind(l.meaning);
+    const lv: EarsLevel = { id: n, ticker: l.ticker, level: l.level, dir: l.dir, meaning: l.meaning, min: items[0]?.min ?? 0, status: "draft", kind, said: `(was heard as "${inst}")` };
+    if (kind !== "level") lv.hold = earsHoldWhy(kind);
+    else { const why = await earsArmOne(lv, `${String(who).slice(0, 30)} · Callouts`); lv.status = why ? "skipped" : "armed"; if (why) lv.why = why; else armed++; }
+    st.levels.push(lv); added++;
+  }
+  st.unsure_items = (st.unsure_items || []).filter((u) => String(u.instrument).toUpperCase().trim() !== inst);
+  st.unsure = (st.unsure || []).filter((x) => !String(x).toUpperCase().startsWith(inst + " "));
+  await putSetting("ears_state", st, "ears");
+  await logDesk("system", "Otto", `🎧 ${who}: "${inst}" was ${T} — ${added} level${added === 1 ? "" : "s"} added (${armed} armed).`);
+  return { ok: true, added, armed };
 }
 export async function earsModeSet(m: string, who: string) {
   const v = m === "auto" ? "auto" : "draft"; await putSetting("ears_mode", v, who);
@@ -8192,7 +8238,7 @@ Deno.serve(async (req) => {
         ...(u ? await ROOM.run({ owner: u.email }, () => meInfo(u)) : {}) });
     }
     if (["desk", "act", "panel", "desk_log", "oauth_start", "oauth_finish", "conn_status", "disconnect",
-         "sentiment", "market_desk", "journal", "why_out", "report_card", "trade_reason", "review_get", "review_build", "score", "morning_now", "ticket", "limits_get", "limits_set", "house_rules_get", "house_rules_set", "watch_get", "watch_set", "watch_scan", "arm_callouts", "ears_arm", "ears_dismiss", "ears_remove", "ears_mode", "ears_state", "performance", "help", "jason_today", "jason_sweep", "jason_score",
+         "sentiment", "market_desk", "journal", "why_out", "report_card", "trade_reason", "review_get", "review_build", "score", "morning_now", "ticket", "limits_get", "limits_set", "house_rules_get", "house_rules_set", "watch_get", "watch_set", "watch_scan", "arm_callouts", "ears_arm", "ears_dismiss", "ears_remove", "ears_fix", "ears_mode", "ears_state", "performance", "help", "jason_today", "jason_sweep", "jason_score",
          "push_key", "push_sub", "push_list", "push_remove", "push_test", "layout_get", "layout_set",
          "signals_feed", "signal_img", "signals_cfg", "signals_cfg_set", "signal_chat", "signal_chat_clear", "selftest_now",
          "playbook_get", "feedback_add", "feedback_list", "daily_now",
@@ -8278,11 +8324,12 @@ Deno.serve(async (req) => {
       if (fn === "watch_get") return json(await watchGet());
       if (fn === "watch_set") return json(await watchSet(body, who));
       if (fn === "arm_callouts") return json(await armCallouts(String(body?.author || who.split("@")[0])));
-      if (fn === "ears_arm") return json(await earsArm(String(body?.author || who.split("@")[0])));
-      if (fn === "ears_dismiss") return json(await earsDismiss(String(body?.author || who.split("@")[0])));
+      if (fn === "ears_arm") return json(await earsArm(String(body?.author || who.split("@")[0]), body?.ids));
+      if (fn === "ears_dismiss") return json(await earsDismiss(String(body?.author || who.split("@")[0]), body?.ids));
       if (fn === "ears_remove") return json(await earsRemove(String(body?.author || who.split("@")[0]), String(body?.ticker || "").toUpperCase(), Number(body?.level)));
+      if (fn === "ears_fix") return json(await earsFix(String(body?.author || who.split("@")[0]), String(body?.instrument || ""), String(body?.ticker || "")));
       if (fn === "ears_mode") { if (body?.mode) return json(await earsModeSet(String(body.mode), String(body?.author || who.split("@")[0]))); return json({ ok: true, mode: await earsMode() }); }
-      if (fn === "ears_state") { const st: EarsState | null = await setting("ears_state").catch(() => null); return json({ ok: true, mode: await earsMode(), state: st ? { ...st, transcript: undefined, seqs: undefined } : null }); }
+      if (fn === "ears_state") { const st: EarsState | null = await setting("ears_state").catch(() => null); return json({ ok: true, mode: await earsMode(), state: st ? { ...st, transcript: body?.words ? st.transcript : undefined, seqs: undefined } : null }); }
       // v3.25 Night Charts
       if (fn === "charts_get") return json(await chartsGet(new URL(req.url).searchParams.get("day") || undefined));
       if (fn === "chart_now") return json(await chartNow(body, who));

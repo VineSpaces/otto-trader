@@ -50,7 +50,7 @@ const b64 = (o: any) => btoa(JSON.stringify(o)).replace(/=+$/, "").replace(/\+/g
 const GOOD = b64({ alg: "none" }) + "." + b64({ role: "authenticated", sub: "u1", email: "ottotrader@vinecreativestudio.com" }) + ".x";
 const route = async (fn: string, body: any = {}, qs = "") => (await HANDLER(new Request("https://x.test/functions/v1/otto-proxy?fn=" + fn + qs, { method: "POST", headers: { authorization: "Bearer " + GOOD, "content-type": "application/json" }, body: JSON.stringify(body) }))).json();
 function assert(c: unknown, msg: string) { if (!c) throw new Error("ASSERT: " + msg); }
-const reset = (iso = "2026-10-26T15:00:00Z") => { (M as any).clearCacheForTest?.(); WATCH = []; SET = {}; DESK = []; ACT = []; SEEDS = []; wId = 1; TRANS = []; SAY = []; LEV = []; BOOM = false; setNow(iso); };
+const reset = (iso = "2026-10-26T15:00:00Z") => { (M as any).clearCacheForTest?.(); WATCH = []; SET = { ears_mode: "draft" }; DESK = []; ACT = []; SEEDS = []; wId = 1; TRANS = []; SAY = []; LEV = []; BOOM = false; setNow(iso); };
 const dropBrain = async () => { Deno.env.set("SUPABASE_URL", "https://x.supabase.co"); Deno.env.set("SUPABASE_SERVICE_ROLE_KEY", "svc"); await route("seed", [{ call: { date: "2000-01-01" }, levels: [] }]); DESK.length = 0; };   // the seed route clears the cached brain
 
 const AUD = "A".repeat(400);
@@ -83,7 +83,7 @@ Deno.test("v4.6 ears: Arm puts every draft on the Watcher (only drafts), dismiss
   assert(d.dismissed === 1 && WATCH.length === 3, "dismissed, not armed");
 });
 Deno.test("v4.6 ears: Automatic mode arms at once and says so; switching back to Draft works; remove takes a level off", async () => {
-  reset(); assert((await route("ears_mode", {})).mode === "draft", "default draft");
+  reset(); delete SET.ears_mode; assert((await route("ears_mode", {})).mode === "auto", "default automatic (v5.1)");
   assert((await route("ears_mode", { mode: "auto", author: "Ifoma" })).mode === "auto", "set auto");
   await M.earsIn({ kind: "start", session: "s3" });
   SAY = ["AMD break of one sixty down at one fifty six"]; LEV = [[L("AMD", "525", "break of 525 up"), L("AMD", "505", "below 505 it is lost")]];

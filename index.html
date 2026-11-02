@@ -616,6 +616,25 @@ body.dk-on::before,body.splash-off::before{display:none!important}
 .sg-feed[hidden],.dk.sg-on .dk-msgs,.dk.sg-on .dk-quick,.dk.sg-on .dk-pend,.dk.sg-on .dk-compose{display:none}
 .sg-day{text-align:center;color:var(--ink-3);font-size:11.5px}
 .dk.al-on .dk-msgs,.dk.al-on .dk-quick,.dk.al-on .dk-pend,.dk.al-on .dk-compose{display:none}
+.dk.ea-on .dk-msgs,.dk.ea-on .dk-quick,.dk.ea-on .dk-pend,.dk.ea-on .dk-compose{display:none}
+/* v5.1 Ears tab */
+.ea-strip{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;background:var(--s2,#15171B);border:1px solid var(--rule,#22262C);border-radius:12px;padding:10px 14px}
+.ea-live{display:inline-flex;align-items:center;gap:7px;font-weight:700}.ea-dot{width:9px;height:9px;border-radius:50%;background:#00C805;box-shadow:0 0 0 4px rgba(0,200,5,.15)}.ea-dot.off{background:#646C78;box-shadow:none}
+.ea-k{color:var(--ink-3);font-size:12px}.ea-v{font-family:ui-monospace,Consolas,monospace;font-size:12.5px}
+.ea-mode{margin-left:auto;display:flex;align-items:center;gap:8px}.ea-seg{display:inline-flex;border:1px solid var(--rule,#22262C);border-radius:8px;overflow:hidden}
+.ea-seg button{padding:5px 12px;color:var(--ink-2,#98A1AD);font-size:12.5px;font-weight:600;background:none;border:0;cursor:pointer}.ea-seg button.on{background:#F5C451!important;color:#16130a!important}.ea-seg button{white-space:nowrap}
+.ea-tools{display:flex;gap:8px;align-items:center;flex-wrap:wrap}.ea-tools .sel{color:var(--ink-3);font-size:12.5px;margin-left:auto}
+.ea-tbl{overflow:auto;border:1px solid var(--rule,#22262C);border-radius:12px;background:#0f1115}
+.ea-tbl table{width:100%;border-collapse:collapse;font-size:13px}.ea-tbl th{position:sticky;top:0;background:#14171c;text-align:left;font-size:11px;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-3);padding:8px 10px}
+.ea-tbl td{padding:8px 10px;border-top:1px solid #1a1e24;vertical-align:middle}.ea-tbl tr.gone td{opacity:.5}
+.ea-tk{font-family:ui-monospace,Consolas,monospace;font-weight:800}.ea-lv{font-family:ui-monospace,Consolas,monospace}.ea-said{color:var(--ink-2,#98A1AD)}
+.ea-up{color:#00C805}.ea-dn{color:#FF5000}
+.ea-st{font-size:10.5px;font-weight:800;padding:2px 8px;border-radius:5px;letter-spacing:.04em}
+.ea-st.draft{background:rgba(90,169,255,.14);color:#5AA9FF}.ea-st.armed{background:rgba(245,196,81,.15);color:#F5C451}.ea-st.skipped{background:rgba(255,80,0,.12);color:#FF5000}.ea-st.dismissed{background:#1E2430;color:#8a93a0}
+.ea-ov{position:fixed;inset:0;background:rgba(0,0,0,.6);display:flex;align-items:center;justify-content:center;z-index:300}
+.ea-pop{width:min(560px,94vw);max-height:86vh;overflow:auto;background:#12151a;border:1px solid #2a2f37;border-radius:14px;padding:18px}
+.ea-pop h3{margin:0 0 4px}.ea-pop .row{display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-top:1px solid #1c2128}.ea-pop .row small{display:block;color:var(--ink-3);font-size:11.5px}.ea-pop input{accent-color:#F5C451;margin-top:3px}
+.ea-pt{cursor:pointer;color:#F5C451}
 .al-it{display:grid;grid-template-columns:34px 1fr;gap:10px}
 .al-ic{width:34px;height:34px;border-radius:9px;background:var(--surface-3);display:grid;place-items:center;font-size:16px}
 .al-t{font-weight:600;line-height:1.35}.al-msg{font-size:12.5px;color:var(--ink-2);white-space:pre-wrap;margin-top:1px}
@@ -1279,11 +1298,13 @@ body.otto-member .dk-rail button[data-go="winston"],body.otto-member #v4wn,body.
       <button data-ct="jarvis" class="on">Jarvis</button>
       <button data-ct="signals">⚡ Otto Signals<span class="sg-badge" id="sgBadge" hidden></span></button>
       <button data-ct="alerts">🔔 TradingView Alerts<span class="sg-badge" id="alBadge" hidden></span></button>
+      <button data-ct="ears">🎧 Ears<span class="sg-badge" id="eaBadge" hidden></span></button>
       <span class="dk-expand" id="dkExpand" role="button" tabindex="0" data-avoid title="Pop the conversation out to a big window — same feed, easier to read and scroll">⤢ Expand</span>
       <span class="sg-watch" id="sgWatch"></span>
     </div>
     <div class="sg-feed" id="sgFeed" hidden></div>
     <div class="sg-feed" id="alFeed" hidden></div>
+    <div class="sg-feed" id="eaFeed" hidden></div>
     <div class="dk-msgs" id="dkMsgs"></div>
     <div class="dk-quick" id="dkQuick">
       <button data-q="Morning read: the three macro inputs, SPY/QQQ and the Mag 7, today's calendar and earnings on my watchlist. Bias and the 2–3 setups worth watching. No orders.">Morning read</button>
@@ -2705,7 +2726,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.0.1";
+const BUILD="5.1.0";
 const ROUTINE=[
  {n:1,title:"The bond market",src:"The 10-year live, plus the official close",calls:[{k:"t10"}]},
  {n:2,title:"One currency pair",src:"USD / JPY, spot",calls:[{k:"jpy"}]},
@@ -3359,6 +3380,7 @@ async function dkStart(){
     if(!DK.streaming)dkPoll();
     if(Date.now()-DK.panelAt>60e3)dkPanel();
     if(Date.now()-(DK.lockAt||0)>60e3)dkLockLoad();
+    try{eaPoll()}catch(_){}
   },10e3);
 }
 /* v3.26: the kill switch's state (banner on the Desk) and today's breaks (red dot on Settings) */
@@ -3634,8 +3656,10 @@ function dkRenderMsgs(stick){
   if(!DK.rows.length&&!DK.streaming)h=`<div class="dk-empty"><b style="color:var(--ink)">The Desk</b><br>Ask anything — a read on the market, a chart (paste it with Ctrl+V), a trade idea, your positions. It reads TradingView and Robinhood live and leans on the Otto Rules. Anything that would change something comes back as a card; nothing happens until someone clicks Approve.</div>`;
   alBadge();if(AL.on)alRender();
   if(DK.lock&&DK.lock.locked)h+=`<div class="dk-lockbar" role="status"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#ff8a5c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" style="flex:none;margin-top:2px"><rect x="4" y="11" width="16" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/></svg><div><b>Locked — ${esc((DK.lock.reasons||[]).map(r=>r.text).join(" · "))}</b>No new cards until ${esc(dkDate(DK.lock.until))} ET. Signals are still listening; new ideas are saved as paper cards and scored in Coaches Corner.</div></div>`;
+  h+=jvPointer();
   for(const r of DK.rows){
     if(alIs(r))continue;                       // v3.12: TradingView alerts live in their own tab
+    if(r.role==="system"&&jvHidden(r))continue;   // v5.1: Ears chatter etc. is hidden here (never deleted) — see "What stays in Jarvis"
     if(r.role==="system"&&/^🎧 Ears heard/.test(r.content||"")){const ls=String(r.content).split("\n"),auto=/AUTO-ARMED/.test(ls[0]),lv=ls.slice(1).filter(x=>/^[A-Z.]{1,6} [\d.]+/.test(x)),note=ls.filter(x=>!/^[A-Z.]{1,6} [\d.]+/.test(x)).slice(1).join(" ");
       // v4.7: once Arm or Dismiss has been tapped (server `handled_at`, or this screen just did it), the post folds to one line so it never re-offers the buttons.
       if(DK.earsHandledAt===undefined){DK.earsHandledAt=null;dkApi("ears_state",{}).then(x=>{DK.earsHandledAt=(x&&x.state&&x.state.handled_at)||null;if(DK.earsHandledAt)dkRenderMsgs(true)}).catch(()=>{})}
@@ -5307,8 +5331,11 @@ window.addEventListener("load",()=>{if(location.hash==="#settings-activity")setT
    Second tab in the Desk center, next to the Jarvis chat. Read-only: the
    Chrome extension on Ifoma's PC fills it. Each burst of the mentor's posts
    shows his words + charts, Jarvis's read, and the card(s) Jarvis built. */
+var EA={on:false,data:null,sel:{},at:0,loading:false};
+function eaOff(){EA.on=false;LS.set("eaOn",false);$("#dk").classList.remove("ea-on");$("#eaFeed").hidden=true}
 const SG={on:false,data:null,img:{},timer:null,loading:false};
 function sgShow(on,noChat){
+  if(on&&EA.on)eaOff();
   if(on&&AL.on){AL.on=false;LS.set("alOn",false);$("#dk").classList.remove("al-on");$("#alFeed").hidden=true}
   SG.on=!!on;LS.set("sgOn",SG.on);
   $("#dk").classList.toggle("sg-on",SG.on);
@@ -5321,7 +5348,7 @@ function sgShow(on,noChat){
   }else if(!noChat)dkRenderMsgs(true);
 }
 $$("#dkCtabs button").forEach(b=>b.addEventListener("click",()=>{const ct=b.dataset.ct;
-  if(ct==="signals")sgShow(true);else if(ct==="alerts")alShow(true);else{sgShow(false,true);alShow(false)}}));
+  if(ct==="signals")sgShow(true);else if(ct==="alerts")alShow(true);else if(ct==="ears")eaShow(true);else{sgShow(false,true);alShow(false);eaShow(false)}}));
 async function sgLoad(){
   if(DK.locked||SG.loading||!USER)return;
   SG.loading=true;
@@ -5400,12 +5427,13 @@ $("#sgFeed").addEventListener("click",e=>{const im=e.target.closest("img.sg-img"
    quiet note. Nothing is deleted — these are the same Desk rows, shown here instead of the chat. */
 var AL={on:false};
 function alIs(r){return !!r&&(r.author==="TradingView"||/^Jarvis · alert read/.test(r.author||""))}
-function ctMark(){const m=SG.on?"signals":AL.on?"alerts":"jarvis";$$("#dkCtabs button").forEach(b=>b.classList.toggle("on",b.dataset.ct===m))}
+function ctMark(){const m=SG.on?"signals":AL.on?"alerts":EA.on?"ears":"jarvis";$$("#dkCtabs button").forEach(b=>b.classList.toggle("on",b.dataset.ct===m))}
 function alShow(on){
   if(on&&SG.on)sgShow(false,true);
+  if(on&&EA.on)eaOff();
   AL.on=!!on;LS.set("alOn",AL.on);
   $("#dk").classList.toggle("al-on",AL.on);$("#alFeed").hidden=!AL.on;ctMark();
-  if(AL.on)alRender(true);else if(!SG.on)dkRenderMsgs(true);
+  if(AL.on)alRender(true);else if(!SG.on&&!EA.on)dkRenderMsgs(true);
   alBadge();
 }
 function alBadge(){
@@ -5446,6 +5474,107 @@ function alRender(stick){
   box.innerHTML=h;
   if(stick||near)box.scrollTop=box.scrollHeight;
 }
+/* ---------- v5.1: Ears tab ----------
+   Everything the live-call listener hears lives here, not in the Jarvis chat. Reads the existing `ears_state`
+   (no new storage); Arm / Dismiss send the ticked ids; nothing in the chat is deleted — hidden kinds are a
+   per-device view setting (localStorage "jvHide"). */
+const JV_KINDS=[
+  {k:"ears",t:"🎧 Ears lines",d:"each minute's “Ears heard N levels” card, listening ended, mode changes, dismissed",re:/^🎧/},
+  {k:"watch",t:"👁 Watcher lines",d:"armed N of M, removed, added to the Watcher, Watching…",re:/^👁/},
+  {k:"charts",t:"📈 Night Charts posts",d:"the evening chart-review posts",re:/^📈/},
+  {k:"callouts",t:"📣 This week's callouts",d:"the weekly list with its Arm button (the levels still arm from the Ears tab)",re:/^📣 This week's callouts/},
+  {k:"wrong",t:"🎯 “Now the wrong-if” lines",d:"the one-line wrong-if updates",re:/^🎯/}
+];
+function jvHideMap(){const m=LS.get("jvHide",null);const o={};JV_KINDS.forEach(k=>o[k.k]=m&&typeof m==="object"&&k.k in m?!!m[k.k]:true);return o}
+function jvHidden(r){const c=String(r.content||"");const m=jvHideMap();return JV_KINDS.some(k=>m[k.k]&&k.re.test(c))}
+function eaToday(st){if(!st||!st.started)return false;const f=d=>new Date(d).toLocaleDateString("en-CA",{timeZone:"America/New_York"});return f(st.started)===f(Date.now())}
+function eaLive(st){return !!(st&&!st.ended&&st.last&&Date.now()-Date.parse(st.last)<4*60e3)}
+function jvPointer(){
+  const st=EA.data&&EA.data.state,gear=`<span class="ea-pt" style="color:var(--ink-3)" data-jv-gear>⚙ What stays in Jarvis</span>`;
+  if(!st||!eaToday(st))return `<div class="dk-sys mut">${gear}</div>`;
+  const n=(st.levels||[]).length,w=(st.levels||[]).filter(l=>l.status==="draft").length;
+  return `<div class="dk-sys"><span class="ea-pt" data-ea-go>🎧 Ears is ${eaLive(st)?"listening":"done for today"} · ${n} level${n===1?"":"s"} heard${w?` · ${w} waiting`:""} → open the Ears tab</span> · ${gear}</div>`;
+}
+function eaBadge(){const st=EA.data&&EA.data.state;const w=st&&eaToday(st)?(st.levels||[]).filter(l=>l.status==="draft").length:0;const el=$("#eaBadge");if(!el)return;el.hidden=!w||EA.on;el.textContent=String(w)}
+async function eaLoad(force){
+  if(DK.locked||EA.loading||!USER)return;
+  if(!force&&Date.now()-EA.at<12e3)return;
+  EA.loading=true;
+  try{EA.data=await dkApi("ears_state",{});EA.at=Date.now();EA.err=null}catch(e){EA.err=e.message}
+  EA.loading=false;eaBadge();
+  if(EA.on)eaRender();else if(!SG.on&&!AL.on&&DK.open)dkRenderMsgs();
+}
+function eaPoll(){if(!DK.open||DK.locked)return;const gap=EA.on?15e3:30e3;if(Date.now()-EA.at>gap)eaLoad()}
+function eaShow(on){
+  if(on&&SG.on)sgShow(false,true);
+  if(on&&AL.on){AL.on=false;LS.set("alOn",false);$("#dk").classList.remove("al-on");$("#alFeed").hidden=true}
+  EA.on=!!on;LS.set("eaOn",EA.on);
+  $("#dk").classList.toggle("ea-on",EA.on);$("#eaFeed").hidden=!EA.on;ctMark();
+  if(EA.on){eaRender(true);eaLoad(true)}else if(!SG.on&&!AL.on)dkRenderMsgs(true);
+  eaBadge();
+}
+function eaRender(){
+  const box=$("#eaFeed");if(!box)return;
+  if(DK.locked){box.innerHTML=`<div class="dk-lock"><h3>Locked</h3><p class="mut">Sign in with your Otto login to see Ears.</p></div>`;return}
+  if(!EA.data){box.innerHTML=`<div class="dk-empty"><b style="color:var(--ink)">🎧 Ears</b><br>${EA.err?esc(EA.err):"Loading…"}</div>`;return}
+  const st=EA.data.state,mode=EA.data.mode==="auto"?"auto":"draft",today=eaToday(st),lv=today?(st.levels||[]):[];
+  const live=today&&eaLive(st),mins=st&&st.chunks?st.chunks:0;
+  const sel=EA.sel,drafts=lv.filter(l=>l.status==="draft"),plain=drafts.filter(l=>!l.hold),ticked=drafts.filter(l=>sel[l.id]);
+  for(const k of Object.keys(sel))if(!drafts.some(l=>String(l.id)===k))delete sel[k];
+  const hm=d=>d?new Date(d).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:"America/New_York"}):"";
+  let h=`<div class="ea-strip"><span class="ea-live"><span class="ea-dot${live?"":" off"}"></span>${live?"Listening to the call":today?"Call ended":"No call today"}</span>`;
+  if(today)h+=`<span><span class="ea-k">Started</span> <span class="ea-v">${hm(st.started)} ET</span></span><span><span class="ea-k">Heard</span> <span class="ea-v">${mins} min · ${lv.length} level${lv.length===1?"":"s"}</span></span>${st.last?`<span><span class="ea-k">Last piece</span> <span class="ea-v">${hm(st.last)}</span></span>`:""}`;
+  else if(st&&st.started)h+=`<span class="ea-k">Last call ${esc(new Date(st.started).toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",timeZone:"America/New_York"}))} · ${(st.levels||[]).length} levels</span>`;
+  h+=`<span class="ea-mode"><span class="ea-k">When Ears hears a level</span><span class="ea-seg"><button data-ea-mode="draft" class="${mode==="draft"?"on":""}">Draft — I tap Arm</button><button data-ea-mode="auto" class="${mode==="auto"?"on":""}">Automatic</button></span></span></div>`;
+  if(!lv.length){
+    h+=`<div class="dk-empty" style="margin:auto"><b style="color:var(--ink)">🎧 Ears</b><br>${today?"The call is on, nothing has been heard yet.":"No call being listened to today. When the Chrome extension records a live call, every level it hears appears here — with what it took each one to mean."}</div>`;
+    box.innerHTML=h;return;
+  }
+  h+=`<div class="ea-tools"><button class="dk-btn go" data-ea-arm ${ticked.length?"":"disabled"}>Arm ${ticked.length||""} ticked</button><button class="dk-btn" data-ea-dis ${ticked.length?"":"disabled"}>Dismiss ticked</button><button class="dk-btn" data-ea-all ${plain.length?"":"disabled"}>${ticked.length&&ticked.length===plain.length?"Untick all":"Tick all drafts"} (${plain.length})</button><button class="dk-btn" data-ea-words>${EA.words?"Hide":"Show"} what was heard</button><span class="sel" id="eaNote">${EA.note?esc(EA.note):drafts.length?`${plain.length} waiting for Arm${drafts.length>plain.length?` · ${drafts.length-plain.length} held back`:""}`:"nothing waiting"}</span></div>`;
+  h+=`<div class="ea-tbl"><table><thead><tr><th></th><th>Stock</th><th>Level</th><th>Call min</th><th>Status</th><th>What Ears took it to mean</th><th>Words heard</th><th></th></tr></thead><tbody>`;
+  for(const l of lv.slice().sort((a,b)=>b.id-a.id)){
+    const dr=l.status==="draft",gone=l.status==="dismissed"||l.status==="skipped";
+    const arrow=l.dir==="up"?`<span class="ea-up">▲</span>`:l.dir==="down"?`<span class="ea-dn">▼</span>`:"";
+    h+=`<tr class="${gone?"gone":""}"><td>${dr?`<input type="checkbox" data-ea-tick="${l.id}" ${sel[l.id]?"checked":""}>`:""}</td><td class="ea-tk">${esc(l.ticker)}</td><td class="ea-lv">${esc(l.level)} ${arrow}</td><td class="ea-k">${esc(l.min)}</td><td><span class="ea-st ${l.hold&&dr?"skipped":esc(l.status)}">${l.hold&&dr?(l.kind==="range"?"RANGE":"HELD BACK"):esc(String(l.status).toUpperCase())}</span></td><td class="ea-said">${esc(l.meaning||"")}${l.hold&&dr?`<div class="ea-k">${esc(l.hold)}</div>`:""}${l.why?`<div class="ea-k" style="color:#d98a5c">Not armed: ${esc(l.why)}</div>`:""}</td><td class="ea-k" style="max-width:260px">${esc(l.said||"")}</td><td style="white-space:nowrap">${dr?`<button class="dk-link" data-ea-one="arm|${l.id}">Arm</button> · <button class="dk-link" data-ea-one="dis|${l.id}">Dismiss</button>`:l.status==="armed"?`<button class="dk-link" data-ea-rm="${esc(l.ticker)}|${esc(l.level)}">Remove</button>`:""}</td></tr>`;
+  }
+  h+=`</tbody></table></div>`;
+  if(today&&(st.unsure_items||[]).length){const g={};(st.unsure_items||[]).forEach(u=>{(g[u.instrument]=g[u.instrument]||[]).push(u.value)});
+    h+=`<div class="ea-strip" style="flex-direction:column;align-items:flex-start;gap:6px"><div class="ea-k" style="color:#d98a5c">Unsure — no known stock behind these, so none were armed. Type the real ticker to add them:</div>${Object.keys(g).map(k=>`<div>${esc(k)} <span class="ea-k">(${g[k].map(esc).join(", ")})</span> → it was <input class="ea-fix" size="6" maxlength="5" placeholder="TICKER" data-ea-fixin="${esc(k)}"> <button class="dk-link" data-ea-fix="${esc(k)}">Add</button></div>`).join("")}</div>`}
+  if(EA.words)h+=`<div class="ea-tbl" style="padding:10px 12px;white-space:pre-wrap;font-size:12.5px;max-height:240px" class="ea-k">${EA.wordsText==null?"Loading…":esc(EA.wordsText||"Nothing kept yet.")}</div>`;
+  h+=`<div class="ea-k">Heard by voice, so a number can be wrong. Armed levels sit on the Watcher; Remove takes one back off.</div>`;
+  const keep=box.scrollTop;box.innerHTML=h;box.scrollTop=keep;
+}
+async function eaAct(fn,body,okmsg){
+  EA.note="Working…";eaRender();
+  try{const r=await dkApi(fn,Object.assign({author:dkWho()},body));EA.note=okmsg(r);EA.sel={};try{dkWatchLoad()}catch(_){}}
+  catch(e){EA.note=String(e.message||e).slice(0,90)}
+  await eaLoad(true);eaRender();
+}
+document.addEventListener("click",e=>{
+  const t=e.target.closest&&e.target.closest("[data-ea-go],[data-jv-gear],[data-ea-mode],[data-ea-arm],[data-ea-dis],[data-ea-all],[data-ea-one],[data-ea-rm],[data-ea-tick],[data-ea-words],[data-ea-fix]");if(!t)return;
+  if(t.hasAttribute("data-ea-go"))return eaShow(true);
+  if(t.hasAttribute("data-jv-gear"))return jvGear();
+  if(t.hasAttribute("data-ea-words")){EA.words=!EA.words;eaRender();if(EA.words){EA.wordsText=null;dkApi("ears_state",{words:true}).then(x=>{EA.wordsText=(x&&x.state&&x.state.transcript)||"";eaRender()}).catch(()=>{EA.wordsText="";eaRender()})}return}
+  if(t.hasAttribute("data-ea-fix")){const k=t.getAttribute("data-ea-fix"),inp=[...document.querySelectorAll("[data-ea-fixin]")].find(i=>i.getAttribute("data-ea-fixin")===k),tk=inp?inp.value.trim().toUpperCase():"";if(!/^[A-Z]{1,5}$/.test(tk)){toast("Type the ticker first, e.g. LEN");return}return eaAct("ears_fix",{instrument:k,ticker:tk},r=>`${r.added} level${r.added===1?"":"s"} added for ${tk} (${r.armed} armed)`)}
+  const st=EA.data&&EA.data.state,drafts=((st&&st.levels)||[]).filter(l=>l.status==="draft");
+  const ids=drafts.filter(l=>EA.sel[l.id]).map(l=>l.id);
+  if(t.hasAttribute("data-ea-tick")){const id=t.getAttribute("data-ea-tick");if(t.checked)EA.sel[id]=true;else delete EA.sel[id];EA.note="";return eaRender()}
+  if(t.hasAttribute("data-ea-all")){const pl=drafts.filter(l=>!l.hold);if(ids.length&&ids.length===pl.length)EA.sel={};else{EA.sel={};pl.forEach(l=>EA.sel[l.id]=true)}EA.note="";return eaRender()}
+  if(t.hasAttribute("data-ea-arm")&&ids.length)return eaAct("ears_arm",{ids},r=>`${r.armed} armed on the Watcher${r.skipped?` · ${r.skipped} skipped (too far from price or not a stock)`:""}`);
+  if(t.hasAttribute("data-ea-dis")&&ids.length)return eaAct("ears_dismiss",{ids},r=>`${r.dismissed} dismissed`);
+  if(t.hasAttribute("data-ea-one")){const [a,id]=t.getAttribute("data-ea-one").split("|");return a==="arm"?eaAct("ears_arm",{ids:[Number(id)]},r=>`${r.armed} armed${r.skipped?" · skipped (too far from price or not a stock)":""}`):eaAct("ears_dismiss",{ids:[Number(id)]},r=>`${r.dismissed} dismissed`)}
+  if(t.hasAttribute("data-ea-rm")){const [tk,lv]=t.getAttribute("data-ea-rm").split("|");return eaAct("ears_remove",{ticker:tk,level:Number(lv)},()=>`${tk} ${lv} taken off the Watcher`)}
+  if(t.hasAttribute("data-ea-mode"))return eaAct("ears_mode",{mode:t.getAttribute("data-ea-mode")},r=>"Ears is now "+(r.mode==="auto"?"Automatic":"Draft"));
+});
+function jvGear(){
+  const m=jvHideMap(),ov=document.createElement("div");ov.className="ea-ov";
+  ov.innerHTML=`<div class="ea-pop"><h3>What stays in Jarvis</h3><div class="ea-k" style="margin-bottom:6px">Tick a kind to keep it in the Jarvis chat. Unticked kinds are hidden here — nothing is deleted, and Ears shows them in its tab. Trade lines, check-ins, plans and coach notes always stay.</div>${JV_KINDS.map(k=>`<label class="row"><input type="checkbox" data-jv="${k.k}" ${m[k.k]?"":"checked"}><span><b>${esc(k.t)}</b><small>${esc(k.d)}</small></span></label>`).join("")}<div style="text-align:right;margin-top:10px"><button class="dk-btn go" data-jv-done>Done</button></div></div>`;
+  ov.addEventListener("change",e=>{const c=e.target.closest("[data-jv]");if(!c)return;const cur=jvHideMap();cur[c.getAttribute("data-jv")]=!c.checked;LS.set("jvHide",cur);dkRenderMsgs()});
+  ov.addEventListener("click",e=>{if(e.target===ov||e.target.closest("[data-jv-done]"))ov.remove()});
+  document.body.appendChild(ov);
+}
+if(LS.get("eaOn",false))setTimeout(()=>{try{if(DK.open&&!EA.on&&!SG.on&&!AL.on)eaShow(true)}catch(e){}},1800);
+setTimeout(()=>{try{if(DK.open)eaLoad(true)}catch(e){}},2200);
 function alFromHash(){if(location.hash!=="#alerts")return;try{if(!DK.open&&typeof openDesk==="function")openDesk();dkShow("desk");alShow(true)}catch(e){}}
 window.addEventListener("load",()=>setTimeout(alFromHash,1500));
 window.addEventListener("hashchange",alFromHash);
