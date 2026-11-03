@@ -12,7 +12,8 @@
 /* ------------------------------------------------------------------ plumbing */
 
 const T: any = (globalThis as any).__WINSTON_TEST__ || null;
-const MODEL = "claude-sonnet-4-6";   // v5.3.1 (3 Nov, 9:55 AM): back on Sonnet 4.6 — Opus 5.5 rejected tool_choice {type:"tool"} (every AI call failed from 8:45 AM). Opus returns as its own build with that fixed.
+const MODEL = "claude-opus-5-5";   // v5.3 (Ifoma, 3 Nov): Winston runs on Opus. v5.3.1: Opus 5.5 refuses a FORCED tool choice, so it is asked with the tool offered and a plain instruction; any failure falls back to Sonnet 4.6 (see aiJson).
+const FALLBACK_MODEL = "claude-sonnet-4-6";   // the one model known to accept tool_choice {type:"tool"}
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -660,20 +661,35 @@ async function freeLock(name: string) { await db(`winston_settings?key=eq.${name
 
 /* ------------------------------------------------------------------ AI */
 
-async function aiJson(system: string, user: string, tool: { name: string; description: string; input_schema: any }, maxTokens = 3000): Promise<{ out: any; usage: { input: number; output: number } }> {
-  if (T?.ai) return T.ai({ system, user, tool });
+/* v5.3.1 (3 Nov 2026): Opus 5.5 answered every call on 3 Nov with 400 "tool_choice: type tool and any are not supported for this model" — Winston was blind
+   from 8:45 AM. Now: a model other than FALLBACK_MODEL is never sent a forced tool choice (the tool is offered, the system prompt says to call it); and if that
+   attempt fails for ANY reason (refused, no tool answer, slow, overloaded) the same question is asked once more of FALLBACK_MODEL with the forced choice, and
+   the switch is logged ("ai_fallback"). A model problem can cost a slower tick, never a blind one. */
+async function aiAsk(model: string, system: string, user: string, tool: { name: string; description: string; input_schema: any }, maxTokens: number): Promise<{ out: any; usage: { input: number; output: number }; model: string }> {
   const key = Deno.env.get("ANTHROPIC_KEY") || "";
   if (!key) throw new Error("ANTHROPIC_KEY is not set");
+  const forced = model === FALLBACK_MODEL;
+  const sys = forced ? system : system + `\n\nAnswer ONLY by calling the tool "${tool.name}". Do not reply with text.`;
   const r = await safeFetch("https://api.anthropic.com/v1/messages", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": key, "anthropic-version": "2023-06-01" },
-    body: JSON.stringify({ model: MODEL, max_tokens: maxTokens, system, tools: [tool], tool_choice: { type: "tool", name: tool.name }, messages: [{ role: "user", content: user }] }),
+    body: JSON.stringify({ model, max_tokens: maxTokens, system: sys, tools: [tool], ...(forced ? { tool_choice: { type: "tool", name: tool.name } } : {}), messages: [{ role: "user", content: user }] }),
+    ...(forced ? {} : { signal: AbortSignal.timeout(75_000) }),
   });
-  const j = await r.json();
+  const j = await r.json().catch(() => ({ error: { message: "HTTP " + r.status } }));
   if (j.error) throw new Error(String(j.error.message || "AI error").slice(0, 200));
   const blk = (j.content || []).find((c: any) => c.type === "tool_use" && c.name === tool.name);
   if (!blk) throw new Error("AI gave no structured answer");
-  return { out: blk.input, usage: { input: num(j.usage?.input_tokens), output: num(j.usage?.output_tokens) } };
+  return { out: blk.input, usage: { input: num(j.usage?.input_tokens), output: num(j.usage?.output_tokens) }, model };
+}
+export async function aiJson(system: string, user: string, tool: { name: string; description: string; input_schema: any }, maxTokens = 3000): Promise<{ out: any; usage: { input: number; output: number }; model?: string }> {
+  if (T?.ai) return T.ai({ system, user, tool });
+  try { return await aiAsk(MODEL, system, user, tool, maxTokens); }
+  catch (e) {
+    if (MODEL === FALLBACK_MODEL) throw e;
+    await wlog("ai_fallback", { from: MODEL, to: FALLBACK_MODEL, tool: tool.name, msg: String((e as Error).message || e).slice(0, 200) });
+    return await aiAsk(FALLBACK_MODEL, system, user, tool, maxTokens);
+  }
 }
 async function addAiCost(day: string, usage: { input: number; output: number }) {
   const r = await db(`winston_days?day=eq.${day}&select=ai`);
