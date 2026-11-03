@@ -12,7 +12,7 @@
 /* ------------------------------------------------------------------ plumbing */
 
 const T: any = (globalThis as any).__WINSTON_TEST__ || null;
-const MODEL = "claude-opus-5-5";   // v5.3 (Ifoma, 3 Nov): Winston moves to Opus; Baby J stays on Sonnet 4.6 (otto-proxy) until the comparison
+const MODEL = "claude-sonnet-4-6";   // v5.3.1 (3 Nov, 9:55 AM): back on Sonnet 4.6 — Opus 5.5 rejected tool_choice {type:"tool"} (every AI call failed from 8:45 AM). Opus returns as its own build with that fixed.
 
 const CORS = {
   "access-control-allow-origin": "*",

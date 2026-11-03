@@ -1380,9 +1380,9 @@ Deno.test("v5.0.1 dailyContext fetches daily + 5-minute bars ten names per call 
 });
 
 /* =========================== v5.3 (3 Nov 2026, Ifoma "yes to all"): play safe and smart — the 2 Nov day replayed through the new gates =========================== */
-Deno.test("v5.3 model: Winston runs on Opus 5.5 (one MODEL line); Baby J's otto-proxy line is untouched", async () => {
+Deno.test("v5.3.1 model: Winston is back on Sonnet 4.6 (one MODEL line; Opus 5.5 rejected tool_choice); Baby J's otto-proxy line is untouched", async () => {
   const src = await Deno.readTextFile(new URL("../winston.ts", import.meta.url));
-  assert(/^const MODEL = "claude-opus-5-5";/m.test(src), "winston.ts MODEL is claude-opus-5-5");
+  assert(/^const MODEL = "claude-sonnet-4-6";/m.test(src), "winston.ts MODEL is claude-sonnet-4-6 (Opus 5.5 rejects tool_choice type tool; reverted 3 Nov)");
   const proxy = await Deno.readTextFile(new URL("../otto-proxy.ts", import.meta.url));
   assert(/^const MODEL = "claude-sonnet-4-6";/m.test(proxy), "otto-proxy MODEL stays claude-sonnet-4-6 (compare first, move Baby J later)");
   assert(/ALLOWED_MODELS = \[[^\]]*"claude-opus-5-5"/.test(proxy), "the id is one the house already allows");
