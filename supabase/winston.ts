@@ -12,7 +12,7 @@
 /* ------------------------------------------------------------------ plumbing */
 
 const T: any = (globalThis as any).__WINSTON_TEST__ || null;
-const MODEL = "claude-sonnet-4-6";
+const MODEL = "claude-opus-5-5";   // v5.3 (Ifoma, 3 Nov): Winston moves to Opus; Baby J stays on Sonnet 4.6 (otto-proxy) until the comparison
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -119,6 +119,8 @@ export function etToUtcMs(date: string, min: number): number {
 // gates (W3 same ticker, W12-W15, W20-W23) STAMP the trade instead of blocking it, the contract picker has a loose third tier, the time
 // exit has a floor, and limits_override lets Winston drop the live daily stop without touching Josh's limits. mode "strict" = v3.31 behaviour.
 export const CONFIG_DEFAULTS: any = { enabled: true, paper_balance: 4000, own_idea_from_min: 600, coach_idea_from_min: 571,
+  spread_cap_pct: 1, min_contract_price: 1, coach_chase_pct: 0.5,   // v5.3: spread in dollars ≤ 1% of the book; no contract under $1.00; a coach level more than 0.5% behind price is a chase
+ 
   last_entry_min: 930, default_time_exit_min: 180, flat_min: 950, max_open: 1, mode: "strict", min_time_exit_min: 0, limits_override: {},
   universe: ["SPY", "QQQ", "NVDA", "TSLA", "AAPL", "MSFT", "META", "AMZN", "GOOGL", "AMD", "PLTR", "MU"] };
 export const isDataMode = (cfg: any) => String(cfg?.mode || "strict") === "data";
@@ -240,14 +242,23 @@ export const spreadPctOf = (r: { bid: number; ask: number }) => { const mid = (r
 // v4.3 SPREAD PREFERENCE (26 Oct: $757.50 paid in spread against +$591 net — the spread is his biggest opponent). Contracts with a spread
 // ≤ 8% of mid come first; 8–15% is allowed only on a coach call (stamped picker:spread_8_15); wider than that is never picked here (W12 is
 // still the hard 15% wall at fill time). An own idea whose every contract is wider than 8% is passed: liquid names only.
-export function pickContract(rows: Row[], capUsd: number, cashUsd: number, loose = false, coach = false) {
+// v5.3 (Ifoma, 3 Nov "yes to all"): the 8–15% coach tier is GONE (all-time picker:spread_8_15 / loose: 11 trades, −$620, 3 wins; 2 Nov AMGN paid $178 of
+// spread in 49 minutes). The spread is also capped in DOLLARS (≤ spread_cap_pct of the book, default 1%) because 14% of a $10 contract is a different animal
+// from 14% of $0.45 — and no contract under min_contract_price (default $1.00): the CCL $0.30 / $0.45 lottery tickets are out. `coach` is kept for the callers.
+export const spreadUsdOf = (r: { bid: number; ask: number }) => round2((r.ask - r.bid) * 100);
+export function pickContract(rows: Row[], capUsd: number, cashUsd: number, loose = false, coach = false, maxSpreadUsd = Infinity, minPrice = 0) {
+  void coach;
   const fits = rows.filter((r) => r.bid > 0 && r.ask >= r.bid && r.ask * 100 <= capUsd && r.ask * 100 <= cashUsd);
   if (!fits.length) return { row: null as Row | null, by: "none", why: rows.length ? "nothing fits the size cap / cash (cap $" + Math.round(Math.min(capUsd, cashUsd)) + ")" : "no tradable contracts", flags: [] as string[] };
-  let ok = fits.filter((r) => spreadPctOf(r) <= 8), spreadFlag: string[] = [];
-  if (!ok.length && coach) { ok = fits.filter((r) => spreadPctOf(r) <= 15); spreadFlag = ["picker:spread_8_15"]; }
-  if (!ok.length) return { row: null as Row | null, by: "none", why: `every contract that fits has a spread wider than ${coach ? 15 : 8}% of mid (${coach ? "the hard wall" : "own ideas need liquid names"})`, flags: [] as string[] };
+  const priced = fits.filter((r) => r.ask >= minPrice);
+  if (!priced.length) return { row: null as Row | null, by: "none", why: `every contract that fits is under the $${minPrice.toFixed(2)} contract floor (no lottery tickets)`, flags: [] as string[] };
+  const ok = priced.filter((r) => spreadPctOf(r) <= 8 && spreadUsdOf(r) <= maxSpreadUsd);
+  if (!ok.length) {
+    const pctOnly = priced.some((r) => spreadPctOf(r) <= 8);
+    return { row: null as Row | null, by: "none", why: pctOnly ? `every contract that fits has a spread wider than $${Math.round(maxSpreadUsd)} (the ${isFinite(maxSpreadUsd) ? "1%-of-book" : ""} dollar cap)` : "every contract that fits has a spread wider than 8% of mid (liquid names only; the 8–15% coach tier was retired 3 Nov)", flags: [] as string[] };
+  }
   const picked = pickContractTiers(ok, loose);
-  return { ...picked, flags: [...spreadFlag, ...picked.flags] };
+  return { ...picked, flags: [...picked.flags] };
 }
 function pickContractTiers(ok: Row[], loose: boolean) {
   const dist = (r: Row) => Math.abs(Math.abs(r.delta) - 0.35);
@@ -312,6 +323,7 @@ export function limitsState(L: any, e: Equity) {
 export type GateCtx = { rules: Rule[]; d: Decision; cap: number; maxLoss: number; planned_loss: number; cost: number; cash: number; stop_option: number; ask: number;
   openCount: number; maxOpen: number; tickerTakenToday: boolean; sameTickerOpen: boolean; spreadPct: number; quoteAgeSec: number | null; blackout: string | null;
   coachCall: boolean; etMin: number; lastEntryMin: number; ownFromMin: number; coachFromMin: number;
+  flatMin?: number; minTimeExit?: number; spreadUsd?: number; maxSpreadUsd?: number;   // v5.3: time left before flat; spread in dollars at the fill
   // v3.36 — the coach's 15 Oct rules and the data-mode switch. All optional so the v3.31 callers and tests still work.
   dataMode?: boolean; reentryBeyondExit?: string | null; atCoachLevel?: string | null; indexDisagree?: string | null; thesisWrong?: string | null; coachResultAfter?: string | null;
   // v3.44 — the coach, 22 Oct 2026 (stamps in data mode, blocks in strict mode when the rule is on)
@@ -325,7 +337,9 @@ export type GateHit = { rule: string; why: string; soft: boolean };
 // v3.45 (Ifoma, 22 Oct "whatever you decide"): W3 (no adding to the same ticker) is HARD in every mode. Every trade W3 had stamped
 // was a loss (19 Oct TSLA 377.5C $0; 22 Oct SPY 760P −$91, SPY 759P −$33 — the two adds that turned a +$120 SPY day flat); the rule is
 // also the coach's. Rollback = put "W3" back in this set. The pass reason stays "W3: …" so the Winston tab shows it.
-const SOFT = new Set(["W13", "W14", "W15", "W20", "W21", "W22", "W23", "W24", "W25", "W26", "fact", "N1"]);   // v4.4: N1 = headline-only idea (stamps in data mode, blocks in strict)
+// v5.3 (Ifoma, 3 Nov): W20 (re-entry chase: 8 trades, 1 win, −$162) and `fact` (thesis contradicts the chart: 2 Nov ABT −$45 in 18 min) are HARD in every mode.
+// Rollback = put "W20" / "fact" back in this set. Blocks still book a shadow, so the ledger keeps scoring both.
+const SOFT = new Set(["W13", "W14", "W15", "W21", "W22", "W23", "W24", "W25", "W26", "N1"]);   // v4.4: N1 = headline-only idea (stamps in data mode, blocks in strict)
 export function runGatesAll(c: GateCtx): GateHit[] {
   const R = c.rules, hits: GateHit[] = [];
   const hit = (rule: string, why: string) => hits.push({ rule, why, soft: !!c.dataMode && SOFT.has(rule) });
@@ -342,10 +356,13 @@ export function runGatesAll(c: GateCtx): GateHit[] {
   if (ruleOn(R, "W3") && c.sameTickerOpen) hit("W3", "already in this ticker (no adding, no averaging)");
   if (c.openCount >= c.maxOpen) hit("max_open", `already holding ${c.openCount} position${c.openCount === 1 ? "" : "s"} (max ${c.maxOpen})`);
   if (c.etMin > c.lastEntryMin) hit("time", "too late in the day for a new entry");
+  // v5.3 TIME LEFT: a trade opened with less time to the flat than its minimum hold can only end as a flat-close (2 Nov AMGN: in at 3:01, flat at 3:50, −$165 of which $178 was spread).
+  if (num(c.minTimeExit) > 0 && num(c.flatMin) > 0 && c.etMin <= c.lastEntryMin && (num(c.flatMin) - c.etMin) < num(c.minTimeExit)) hit("time", `only ${num(c.flatMin) - c.etMin} minutes left before the ${fmtMin(num(c.flatMin))} flat — less than the ${num(c.minTimeExit)}-minute minimum hold`);
   if (c.etMin < (c.coachCall ? c.coachFromMin : c.ownFromMin)) hit("time", c.coachCall ? "before the coach-idea window opens" : `own ideas wait until ${fmtMin(c.ownFromMin)} (no entry just because the market opened)`);
   if (ruleOn(R, "W12")) {
     const mx = ruleParams(R, "W12").max_spread_pct;
     if (mx != null && c.spreadPct > mx) hit("W12", `spread ${c.spreadPct.toFixed(1)}% is wider than ${mx}%`);
+    if (num(c.maxSpreadUsd) > 0 && num(c.spreadUsd) > num(c.maxSpreadUsd)) hit("W12", `spread $${num(c.spreadUsd)} at the fill is wider than the $${Math.round(num(c.maxSpreadUsd))} cap (${num(c.spreadUsd) > 0 ? "1% of the book" : ""})`);   // v5.3 dollars
   }
   if (ruleOn(R, "W13")) {
     const mx = ruleParams(R, "W13").max_age_sec ?? 15;
@@ -948,7 +965,8 @@ export async function tryOpen(ctx: Ctx, d: Decision, spot: number, coachCall: bo
   const dataMode = isDataMode(cfg);
   let rows: Row[];
   try { rows = await optionRows(d.ticker, d.side, spot, day); } catch (e) { const m = "Could not read the option chain: " + String((e as Error).message).slice(0, 120); await recordIdea(day, d, "blocked", m); return { opened: false, why: m }; }
-  const pick = pickContract(rows, lim.capUsd, eq.cash, dataMode, coachCall);   // v4.3: spread tiers know whether the coach called it
+  const maxSpreadUsd = num(cfg.spread_cap_pct) > 0 ? round2(eq.equity * num(cfg.spread_cap_pct) / 100) : Infinity;   // v5.3: spread in dollars ≤ 1% of the book
+  const pick = pickContract(rows, lim.capUsd, eq.cash, dataMode, coachCall, maxSpreadUsd, num(cfg.min_contract_price));
   if (!pick.row) { const m = "No contract: " + pick.why; await recordIdea(day, d, "passed", m, null); await bookShadow(day, d, spot, "PICK", pick.why); return { opened: false, why: m }; }
   const row = pick.row;
   // Fresh quote right before the fill (W10): the price he pays is the ask NOW, not the one from the chain scan.
@@ -965,6 +983,7 @@ export async function tryOpen(ctx: Ctx, d: Decision, spot: number, coachCall: bo
     sameTickerOpen: eq.open.some((t: any) => String(t.ticker || "").toUpperCase() === d.ticker) || false,
     spreadPct: ef.mid > 0 ? (ef.ask - ef.bid) / ef.mid * 100 : 999, quoteAgeSec: q!.at ? (nowMs() - q!.at) / 1000 : null, blackout, coachCall,
     etMin: min, lastEntryMin: num(cfg.last_entry_min), ownFromMin: num(cfg.own_idea_from_min), coachFromMin: num(cfg.coach_idea_from_min),
+    flatMin: num(cfg.flat_min) || 950, minTimeExit: num(cfg.min_time_exit_min), spreadUsd: round2((ef.ask - ef.bid) * 100), maxSpreadUsd,   // v5.3
     dataMode, reentryBeyondExit: reentryBeyondExit(d.side, spot, closedToday, d.ticker), atCoachLevel: atCoachLevel(d.side, spot, ctx.posts || [], d.ticker),
     indexDisagree: d.ticker === "SPY" && d.side === "call" ? null : indexDisagree(d.side, ctx.index ?? null),
     thesisWrong: thesisVwapWrong(d.thesis, spot, ctx.vwaps?.[d.ticker], d.ticker), coachResultAfter: citedId ? coachResultAfter(citedId, d.ticker, ctx.posts || []) : null,
@@ -1297,6 +1316,15 @@ export function expireBrainForEarnings(brain: string, reported: string[]): strin
 
 // ARMED IDEAS: the AI names a trigger_level; the code waits for a 10-minute CLOSE through it (call: above, put: below) before filling.
 // 23 Oct: QQQ 713C — "a 10-min close above 710 would be the trigger" and he entered at 708.2. Armed ideas live in winston_settings `armed_ideas`.
+// v5.3 (pure): a coach idea must carry a trigger level, and that level must not already be far behind the price. Returns the rule + why, or null.
+export function coachLevelProblem(d: { side: "call" | "put"; trigger_level?: number | null; ticker?: string }, spot: number, chasePct = 0.5): { rule: string; why: string } | null {
+  const trig = num(d.trigger_level);
+  if (!(trig > 0)) return { rule: "C1", why: "Coach post needs a level: no trigger level named — context, not a trade (coach ideas fill only on a 10-minute close through a level)" };
+  if (!(spot > 0)) return null;
+  const past = d.side === "call" ? (spot - trig) / spot * 100 : (trig - spot) / spot * 100;
+  if (past > chasePct) return { rule: "C2", why: `Chasing the coach's level: ${d.ticker || ""} ${spot} is already ${past.toFixed(2)}% past ${trig} (limit ${chasePct}%) — let price come to you` };
+  return null;
+}
 export type Armed = { day: string; ticker: string; side: "call" | "put"; source: string; thesis: string; trigger_level: number; wrong_if_level: number; target_level: number;
   time_exit_min?: number; cites: any[]; rule_ids?: string[]; armed_at: string };
 export function triggerState(a: { side: "call" | "put"; trigger_level: number; wrong_if_level: number }, bars: Bar[], now = nowMs()): "fire" | "drop" | "wait" {
@@ -1478,8 +1506,9 @@ TAPE READ (W24, bonds first): ${ctx.tape ? `${ctx.tape.why} — ${ctx.tape.defen
 REPORTED EARNINGS SINCE YESTERDAY'S CLOSE (W25 waits the full 30 minutes on these): ${ctx.reported?.length ? ctx.reported.join(", ") : "none known"}
 SPY READ (W23): ${ctx.index ? `last ${ctx.index.last} vs VWAP ${ctx.index.vwap} — ${ctx.index.above_vwap ? "above" : "below"} VWAP, closes ${ctx.index.rising ? "rising" : ctx.index.falling ? "falling" : "mixed"}` : "unavailable"}
 READ THE COACH'S POST KINDS: a "result" post (sold, trimmed, took profit, stopped) is his EXIT on that name, not a fresh entry — a tail like "and play the bounce" after a sale is not a new buy unless he gives a new level. A "level" post names where he SELLS TO or buys from; do not enter a call within $0.50 of a level he sells into (W21). Let price come to you (W20): no re-entry on a name above where the last trade got out. Don't chase a move that's done (W26): a name already down big today is not a fresh put.
-SPREAD (v4.3): the bid/ask spread is your biggest cost — $757 paid in spread against $591 net profit so far. Prefer liquid names; a contract wider than 8% of mid is only taken on a coach call, and 15% is the wall. Each snapshot row carries "context": the 20-day range, 5-day trend, yesterday's high/low/close and the pre-market range — the chart the coach reads.
+SPREAD (v5.3): the bid/ask spread is your biggest cost — $1,168 paid in spread against $482 net profit through 2 Nov. Liquid names only: the contract picker takes nothing wider than 8% of mid, nothing wider than 1% of the book in dollars, and nothing under $1.00 (no lottery tickets). TIME LEFT: no new entry with less time to the 3:50 flat than the ${num(cfg.min_time_exit_min) || 0}-minute minimum hold. Each snapshot row carries "context": the 20-day range, 5-day trend, yesterday's high/low/close and the pre-market range — the chart the coach reads.
 COACH'S RULES OF 29 OCT (brain PB-1029-01…09, now with the numbers to use): VWAP RECLAIM (02) — price lost VWAP and closed back above it; allow a variance of ${VWAP_VARIANCE_PCT}% of price around VWAP (the coach: a % of price, flexed by order blocks and sentiment; this is the starting default) and enter AFTER the reclaim, as a trigger. VWAP FLATTENS after earnings (01/06) — trade the retrace to VWAP that holds, not the opening pop. PRE-MARKET HIGH/LOW (03) — a 10-minute close through the pre-market high can open a NEW long, through the pre-market low a NEW short (the coach confirmed a new trade is fine; W3 still means no adding). RANGE BREAK (04) — a close through LAST FULL WEEK's low can take puts, through its high can take calls; the PRIOR MONTH's range is the same signal and stronger. Each snapshot row's "context" now carries both ranges when the broker returned them.
+COACH POSTS ARE LEVELS (v5.3): a coach idea (source coach:N) is only filled on a 10-minute CLOSE through a level YOU name in trigger_level — read the post, decide what it is, pick the level (his entry, his "above/below X", a reclaim, a break). A post with no usable number is context, not a trade: pass it with that reason. A level the price has already run more than ${num(cfg.coach_chase_pct) || 0.5}% past is a chase — pass it. Every NEW coach post gets a decision or a pass, no exceptions.
 TRIGGERS (v4.3): if your entry needs a 10-minute CLOSE through a level first (the coach's "above X" / "below X", a reclaim, a break), put it in trigger_level and the code waits for the close — never enter ahead of a trigger you name. ${armed.waiting ? `${armed.waiting} armed idea(s) are already waiting for their trigger. ` : ""}${armed.fired.length ? `Armed and fired this tick: ${armed.fired.join(", ")}. ` : ""}${armed.dropped.length ? `Armed and dropped this tick: ${armed.dropped.join(", ")}. ` : ""}${(ctx.reported || []).length ? `EXPIRED: callouts on ${ctx.reported!.join(", ")} were written before their earnings — re-read those names fresh from today's bars and context only.` : ""}
 Decide now. Act on NEW coach posts (take or pass, with a reason) and on any idea of your own that the chart and brain support.`;
     let out: any, usage = { input: 0, output: 0 };
@@ -1506,6 +1535,19 @@ Decide now. Act on NEW coach posts (take or pass, with a reason) and on any idea
       } else d.source = "own";
       const spot = quotes[d.ticker]?.spot;
       if (!spot) { await recordIdea(day, d, "passed", "No live price for " + d.ticker); continue; }
+      // v5.3 COACH POSTS ARE LEVELS, NOT TRIGGERS (Ifoma, 3 Nov): Winston still reads every post and decides what it is, but a coach idea only fills on a
+      // 10-minute CLOSE through a level he names. No level = not tradeable (2 Nov ABT on "healthcare looks great", −$45). A level already more than
+      // coach_chase_pct behind the price is a chase, not an entry (2 Nov CCL at +5.5%). Both book a shadow so the ledger scores the rule.
+      if (coach) {
+        const cp = coachLevelProblem(d, spot, num(cfg.coach_chase_pct));
+        if (cp) { await recordIdea(day, d, "passed", cp.why); await bookShadow(day, d, spot, cp.rule, cp.why); results.push({ t: d.ticker, ok: false, why: cp.why }); continue; }
+        const st = triggerState({ side: d.side, trigger_level: num(d.trigger_level), wrong_if_level: d.wrong_if_level }, bars[d.ticker] || []);
+        if (st !== "fire") {
+          const bad = planProblem(d, spot);
+          if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); results.push({ t: d.ticker, ok: false, why: bad }); continue; }
+          await armIdea(ctx, d, coach); results.push({ t: d.ticker, ok: false, why: "armed" }); continue;
+        }
+      }
       // v4.3 ARMED: a named trigger that has not been closed through yet means wait, not fill.
       if (needsTrigger(d, spot) && triggerState({ side: d.side, trigger_level: num(d.trigger_level), wrong_if_level: d.wrong_if_level }, bars[d.ticker] || []) !== "fire") {
         const bad = planProblem(d, spot);
@@ -1516,7 +1558,7 @@ Decide now. Act on NEW coach posts (take or pass, with a reason) and on any idea
       results.push({ t: d.ticker, ok: r.opened, why: r.why });
     }
     const newReask: string[] = [];
-    for (const p of (Array.isArray(out?.passes) ? out.passes : []).slice(0, 12)) {
+    for (const p of (Array.isArray(out?.passes) ? out.passes : []).slice(0, 30)) {   // v5.3: was 12 — with Ears-day post counts the tail fell off as "no decision"
       const src = String(p.source || "own");
       if (src.startsWith("coach:")) handled.add(src.slice(6));
       const pt = String(p.ticker || "").toUpperCase().replace(/[^A-Z.]/g, "");
@@ -1527,7 +1569,10 @@ Decide now. Act on NEW coach posts (take or pass, with a reason) and on any idea
       await recordIdea(day, { ticker: p.ticker, source: src.startsWith("coach:") && postById.has(src.slice(6)) ? src : "own", rule_ids: rids, cites: Array.isArray(p.cites) ? p.cites.slice(0, 6) : [] },
         "passed", reasonTxt);
     }
-    for (const p of actionable) if (!handled.has(String(p.id))) await recordIdea(day, { ticker: p.ticker, side: p.direction === "short" ? "put" : "call", source: "coach:" + p.id }, "passed", "Winston gave no decision on this post");
+    const undecided = actionable.filter((p) => !handled.has(String(p.id)));
+    for (const p of undecided) await recordIdea(day, { ticker: p.ticker, side: p.direction === "short" ? "put" : "call", source: "coach:" + p.id }, "passed", "Winston gave no decision on this post");
+    if (undecided.length) await wlog("no_decision", { posts: undecided.map((p) => `${p.id} ${p.ticker}`), n_decisions: (out?.decisions || []).length, n_passes: (out?.passes || []).length,   // v5.3: find the cause (2 Nov: 4 in one day)
+      decided: (out?.decisions || []).map((x: any) => `${x.ticker} ${x.source}`).slice(0, 12), passed: (out?.passes || []).map((x: any) => `${x.ticker} ${x.source}`).slice(0, 40), notes: String(out?.notes || "").slice(0, 300) }).catch(() => {});
     await putSetting("tick_state", { day, snap, last_jason_id: Math.max(lastId, ...posts.map((p) => num(p.id)), 0), last_ai_ms: nowMs(), reask: [...new Set(newReask)].slice(0, 6) });
     return { ok: true, closed: mgd.closed, results, armed, notes: out?.notes || null };
   } finally { await freeLock("tick_lock"); }
