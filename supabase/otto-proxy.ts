@@ -1183,22 +1183,53 @@ const TEST: any = (globalThis as any).__OTTO_TEST__ || null;
 /* v4.2: TradingView's connector has a DAILY tool-call quota (hit 23 Oct ~noon: three open Desks × one alerts call per
    minute). Every TV call is counted per ET day in otto_settings "tv_calls" (approximate across instances — good enough
    for the top-bar number), and a quota error opens the breaker until the 00:00 UTC reset instead of retrying all day. */
-let TV_CALLS: { day: string; n: number } = { day: "", n: 0 };
+let TV_CALLS: { day: string; n: number; by?: Record<string, number>; fn?: Record<string, number> } = { day: "", n: 0 };
+/* v5.3.1 (3 Nov 2026): WHO spends the TradingView quota. Besides the day's total, every call is tallied by tool ("by") and by the
+   route that asked ("fn"; a member's room is prefixed). Each finished day is kept in otto_settings "tv_calls_hist" (last 14), and
+   the first quota error of a day writes "tv_quota_trip" (when, count, tallies, route). Calls made OUTSIDE Otto (other Claude chats,
+   scheduled tasks) are not visible here — if the trip shows a small Otto count, the rest came from outside. */
+let CUR_FN = "", HIST_DAY = "", TRIP_DAY = "";
+export const setTvRoute = (f: string) => { CUR_FN = f; };   // approximate: a worker can overlap requests
+async function tvHistPush(d: { day: string; n: number; by?: any; fn?: any }) {
+  const h = (await setting("tv_calls_hist").catch(() => null)) || [];
+  const list = (Array.isArray(h) ? h : []).filter((e: any) => e?.day !== d.day);
+  list.push({ day: d.day, n: d.n, by: d.by || {}, fn: d.fn || {} });
+  await putSetting("tv_calls_hist", list.slice(-14));
+}
+function tvNoteQuota(e: unknown, tool: string) {
+  if (!/QUOTA_EXCEEDED|quota exceeded/i.test(String((e as Error)?.message ?? e))) return;
+  const day = etParts().date; if (TRIP_DAY === day) return; TRIP_DAY = day;
+  const d = TV_CALLS.day === day ? TV_CALLS : { day, n: 0, by: {}, fn: {} };
+  putSetting("tv_quota_trip", { at: new Date().toISOString(), day, n: d.n, by: d.by || {}, fn: d.fn || {}, tool, route: CUR_FN, msg: String((e as Error)?.message ?? e).slice(0, 200) }).catch(() => {});
+  putSetting("tv_calls", d).catch(() => {});
+}
 export const tvCallsToday = () => TV_CALLS;
-function tvCount() {
+function tvCount(tool = "?") {
   const day = etParts().date;
-  if (TV_CALLS.day !== day) TV_CALLS = { day, n: 0 };
+  if (TV_CALLS.day !== day) { if (TV_CALLS.day && TV_CALLS.n > 0) tvHistPush(TV_CALLS).catch(() => {}); TV_CALLS = { day, n: 0, by: {}, fn: {} }; }
   TV_CALLS.n++;
+  const by = (TV_CALLS.by ||= {}), fn = (TV_CALLS.fn ||= {}), route = (owner() !== HOUSE ? owner() + ":" : "") + (CUR_FN || "?");
+  by[tool] = (by[tool] || 0) + 1; fn[route] = (fn[route] || 0) + 1;
   if (TV_CALLS.n % 5 === 0) putSetting("tv_calls", TV_CALLS).catch(() => {});
 }
-async function tvCallsLoad() { try { const v = await setting("tv_calls"); if (v?.day === etParts().date && v.n > TV_CALLS.n) TV_CALLS = v; } catch { /* */ } }
+async function tvCallsLoad() {
+  try {
+    const v = await setting("tv_calls"), today = etParts().date;
+    if (v?.day === today && v.n > TV_CALLS.n) TV_CALLS = v;
+    else if (v?.day && v.day !== today && v.n > 0 && HIST_DAY !== v.day) { HIST_DAY = v.day; await tvHistPush(v); }   // v5.3.1: a finished day goes to the history once
+  } catch { /* */ }
+}
 const nextUtcMidnight = () => { const d = new Date(); d.setUTCHours(24, 0, 0, 0); return d.getTime(); };
 const PAPER_ONLY = "Rooms are paper-only in this version";
 async function call(service: string, tool: string, args: any) {
+  try { return await call0(service, tool, args); }
+  catch (e) { if (service === "tv") tvNoteQuota(e, tool); throw e; }   // v5.3.1: the first quota error of a day is recorded with who had spent what
+}
+async function call0(service: string, tool: string, args: any) {
   let res: any;
   // v5.0 ROOMS: a member's room never places, cancels or changes anything on Robinhood — whatever card, tool or sweep asked.
   if (owner() !== HOUSE && service === "rh" && WRITE.rh.has(tool)) throw new Error(PAPER_ONLY + " — nothing is sent to Robinhood (" + tool + ")");
-  if (service === "tv") tvCount();
+  if (service === "tv") tvCount(tool);
   if (TEST?.call) res = await TEST.call(service, tool, args);
   else {
     try { res = await mcp(service, "tools/call", { name: tool, arguments: args || {} }); }
@@ -1878,7 +1909,7 @@ async function panel() {
     }
     if (Object.keys(qv).length) out.quotes = { data: Object.entries(qv).map(([symbol, v]: any) => ({ symbol, close: v.close, change: v.change })) };
     if (al.ok) { out.alerts = al.v; if ((al as any).note) out.alerts_note = (al as any).note; } else out.alerts_error = al.error;
-    await tvCallsLoad(); out.tv_calls = TV_CALLS.n; out.tv_quota_until = tvSlow() && TV_SLOW_UNTIL > Date.now() + 10 * 60_000 ? TV_SLOW_UNTIL : null;   // v4.2
+    await tvCallsLoad(); out.tv_calls = TV_CALLS.n; out.tv_by = TV_CALLS.by || {}; out.tv_fn = TV_CALLS.fn || {}; out.tv_quota_until = tvSlow() && TV_SLOW_UNTIL > Date.now() + 10 * 60_000 ? TV_SLOW_UNTIL : null;   // v4.2
   };
 
   const rhPart = async () => {
@@ -8113,6 +8144,7 @@ Deno.serve(async (req) => {
   // published URL would let a stranger burn the market-data and Claude quotas.
   // v3.1 scheduled runs (pg_cron → pg_net). They carry the cron secret, not a user.
   const fn0 = new URL(req.url).searchParams.get("fn") || "";
+  setTvRoute(fn0 || "app");   // v5.3.1
   if (fn0 === "signal_in") {
     try { return json(await signalIn(req)); }
     catch (e) { const m = String((e as Error).message || e); return json({ ok: false, error: m }, /key/.test(m) ? 401 : 500); }
@@ -8258,6 +8290,7 @@ Deno.serve(async (req) => {
   }
 
   const fn = new URL(req.url).searchParams.get("fn") || "market";
+  setTvRoute(fn);   // v5.3.1
 
   try {
     // ---- The Desk (v3.0). Locked to OTTO_ALLOWED_EMAILS, never anonymous.
