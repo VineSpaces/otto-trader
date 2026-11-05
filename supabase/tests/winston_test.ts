@@ -123,7 +123,16 @@ const ALLOWED_TABLES = /^(winston_(settings|rules|days|ideas|trades|log|shadows)
 
 /* =========================== G1. static scan: no order code, no sign-in code =========================== */
 Deno.test("G1: winston.ts has no order-writing tool names, no token or sign-in code, no live-account tables", async () => {
-  const src = await Deno.readTextFile(new URL("../winston.ts", import.meta.url));
+  const src0 = await Deno.readTextFile(new URL("../winston.ts", import.meta.url));
+  // v4.9 (4 Nov): the ONE narrow door to the live account is the LIVE PLUMBING block (it asks otto-proxy's winston_live gateway). It is cut out here and
+  // scanned on its own below with a shorter forbidden list; everything else in winston.ts keeps the original wall.
+  const i0 = src0.indexOf("v4.9 LIVE PLUMBING"), i1 = src0.indexOf("/* ------------------------------------------------------------------ HTTP */");
+  assert(i0 > 0 && i1 > i0, "the v4.9 live block markers exist");
+  const liveBlock = src0.slice(i0, i1), src = src0.slice(0, i0) + src0.slice(i1);
+  const lcode = liveBlock.split("\n").filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l)).join("\n");
+  for (const re of [/place_(equity|crypto)_order/, /cancel_(equity|crypto)_order/, /exercise_option/, /review_equity_order/, /refresh_token/i, /oauth/i, /otto_conn/, /otto_actions/, /otto_desk/, /otto_watch/, /otto_trades/,
+    /get_(equity)_(positions|orders)/, /get_pnl_trade_history/, /get_realized_pnl/, /OTTO_TOKEN_KEY/, /unseal|aesKey/, /\bfetch\(/, /Deno\.run|Deno\.Command/])
+    assert(!re.test(lcode), "the live block must not contain " + re);
   const code = src.split("\n").filter((l) => !/^\s*(\/\/|\/\*|\*)/.test(l)).join("\n");     // comments may explain what is forbidden
   const forbidden = [/place_(option|equity|crypto)_order/, /cancel_(option|equity|crypto)_order/, /exercise_option/, /review_(option|equity)_order/,
     /refresh_token/i, /oauth/i, /authorize/i, /otto_conn/, /otto_actions/, /otto_desk/, /otto_watch/, /otto_checks/, /otto_trades/, /otto_activity/,
@@ -190,9 +199,17 @@ Deno.test("G3: Winston's database wall refuses live-account tables and writes to
 
 /* =========================== G4. the reverse wall =========================== */
 Deno.test("G4: nothing in otto-proxy reads Winston's tables (the app reads Winston through his own function)", async () => {
-  const src = await Deno.readTextFile(new URL("../otto-proxy.ts", import.meta.url));
+  const src0 = await Deno.readTextFile(new URL("../otto-proxy.ts", import.meta.url));
+  // v4.9: the winston_live gateway may READ three winston_settings keys (config, live_limits, kill_now) to decide whether it is open. Nothing else.
+  const g0 = src0.indexOf("v4.9 Winston LIVE gateway"), g1 = src0.indexOf("function background(p: Promise<unknown>)", g0);
+  assert(g0 > 0 && g1 > g0, "the v4.9 gateway markers exist");
+  const gate = src0.slice(g0, g1), src = src0.slice(0, g0) + src0.slice(g1);
+  assert(!/method:\s*["'](POST|PATCH|PUT|DELETE)/i.test(gate), "the live gateway only reads Winston's settings");
+  for (const m of gate.matchAll(/winston_[a-z_]+\?key=eq\.([a-z_]+)/g)) assert(["config", "live_limits", "kill_now"].includes(m[1]), "gateway may not read key " + m[1]);
+  for (const line of gate.split("\n").filter((l) => /\bdb\(/.test(l)))
+    for (const m of line.matchAll(/winston_(?!settings\?key=eq\.(config|live_limits|kill_now)\b)[a-z_]+/g)) assert(false, "gateway may not touch " + m[0]);
   const hits = [...src.matchAll(/winston_[a-z_]+/g)].map((m) => m[0]);
-  const allowed = new Set(["winston_data"]);
+  const allowed = new Set(["winston_data", "winston_live"]);
   for (const h of hits) assert(allowed.has(h), "otto-proxy must not reference " + h);
   assert(!/winston_(settings|rules|days|ideas|trades|log)/.test(src), "no Winston table in otto-proxy");
   const app = await Deno.readTextFile(new URL("../../index.html", import.meta.url));
@@ -1493,4 +1510,43 @@ Deno.test("v5.3 'no decision' is logged with what the AI actually returned, and 
   eq(nd, ["coach:1", "coach:16"], "the two the AI ignored are still logged as no decision");
   const log = TABLES.winston_log.find((l) => l.kind === "no_decision");
   assert(log && log.data.posts.length === 2 && log.data.n_passes === 14 && log.data.n_decisions === 0 && log.data.notes === "quiet tape", "the log row says what came back: " + JSON.stringify(log?.data));
+});
+
+// ---------- v5.4.1 (4 Nov 2026): the "no decision" fix ----------
+Deno.test("v5.4.1 mergeToolInputs: several calls to the decide tool become one answer (arrays concatenate, notes join, nothing lost)", () => {
+  const m = X.mergeToolInputs([
+    { decisions: [{ ticker: "GOOGL", source: "coach:611" }], passes: [], notes: "" },
+    { decisions: [{ ticker: "AMD", source: "coach:616" }], passes: [{ ticker: "FSLR", source: "coach:612", reason: "not in the universe" }], notes: "tape is mixed" },
+    { passes: [{ ticker: "AAPL", source: "coach:614", reason: "past 5%" }], notes: "tape is mixed" },
+  ]);
+  eq(m.decisions.map((d: any) => d.ticker), ["GOOGL", "AMD"], "both decisions kept in order");
+  eq(m.passes.map((p: any) => p.ticker), ["FSLR", "AAPL"], "both passes kept");
+  eq(m.notes, "tape is mixed", "notes: first non-empty, duplicates not repeated");
+  eq(X.mergeToolInputs([null, { a: 1 }, { a: 2, b: "x" }]), { a: 1, b: "x" }, "scalars: first wins; junk skipped");
+});
+Deno.test("v5.4.1 REDO: a coach post that got no decision is shown again as NEW on the next look; a second miss is given up on; the log says why", async () => {
+  seed(); setNow("2026-10-14T14:11:00Z"); await setupCall();
+  TABLES.otto_jason.push({ id: 2, day: "2026-10-14", posted_label: "10:10 AM", kind: "call", ticker: "TSLA", direction: "short", level: 400, words: "TSLA short under 400", late: false });
+  aiScript = () => ({ decisions: [], passes: [] });                                   // the Opus failure shape: nothing about either post
+  await X.tick();
+  const ts = () => TABLES.winston_settings.find((s) => s.key === "tick_state").value;
+  eq(ts().redo, [1, 2], "both undecided posts are queued for one more look");
+  eq(ts().last_jason_id, 2, "the post pointer still moves on (they are re-shown by the redo list, not by id)");
+  assert(TABLES.winston_ideas.filter((i) => /asked again next check/.test(i.reason)).length === 2, "ideas say they will be asked again");
+  const nd = TABLES.winston_log.find((l) => l.kind === "no_decision");
+  assert(nd && JSON.stringify(nd.data.redo_next) === "[1,2]" && JSON.stringify(nd.data.given_up) === "[]", "log carries redo_next: " + JSON.stringify(nd?.data));
+  // next look: the posts are back as NEW with the REDO note; Winston passes one and still says nothing about the other
+  setNow("2026-10-14T14:21:00Z"); W.ai.n = 0;
+  aiScript = (a: any) => { assert(/\[id 1 NEW — REDO/.test(a.user) && /\[id 2 NEW — REDO/.test(a.user), "both posts shown as NEW — REDO: " + a.user.slice(0, 0)); return { decisions: [], passes: [{ ticker: "NVDA", source: "coach:1", reason: "no edge now", rule_ids: [] }] }; };
+  await X.tick();
+  eq(W.ai.n, 1, "the redo list alone wakes the AI");
+  eq(ts().redo, [], "post 2 is not asked a third time");
+  assert(TABLES.winston_ideas.some((i) => i.source === "coach:2" && /asked twice/.test(i.reason)), "second miss is final and says so");
+  assert(TABLES.winston_ideas.some((i) => i.source === "coach:1" && /no edge now/.test(i.reason)), "post 1 got its real pass");
+  const nd2 = TABLES.winston_log.filter((l) => l.kind === "no_decision").pop();
+  eq(nd2.data.given_up, [2], "log names the post given up on");
+  // third look: neither post is NEW any more
+  setNow("2026-10-14T14:31:00Z"); W.ai.n = 0; aiScript = (a: any) => { assert(!/REDO/.test(a.user) && !/\[id [12] NEW/.test(a.user), "nothing re-shown"); return { decisions: [], passes: [] }; };
+  await X.tick();
+  assert(!TABLES.winston_log.slice(-1).some((l) => l.kind === "no_decision" && l.data.redo_next?.length), "no new redo");
 });

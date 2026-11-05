@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="robots" content="noindex">
+<title>Kill Winston</title>
+<style>
+:root{--bg:#0B0C0E;--ink:#F2F5F8;--ink-2:#98A1AD;--rule:#22262C;--down:#FF5000;--up:#00C805}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:16px/1.5 system-ui,-apple-system,"Segoe UI",sans-serif;min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
+.c{max-width:420px;width:100%;text-align:center}h1{font-size:26px;margin:0 0 8px}p{color:var(--ink-2);margin:0 0 22px}
+button{position:relative;overflow:hidden;width:100%;padding:26px 16px;font:800 20px system-ui;letter-spacing:.05em;color:#fff;background:var(--down);border:0;border-radius:16px;cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none}
+button i{position:absolute;left:0;top:0;bottom:0;width:0;background:rgba(0,0,0,.4)}button span{position:relative}
+#out{margin-top:22px;font-size:15px;min-height:48px}.ok{color:var(--up)}.bad{color:var(--down)}small{display:block;margin-top:26px;color:#646C78;font-size:12.5px}
+</style></head><body><div class="c">
+<h1>Kill Winston</h1>
+<p>Cancels every open order on ••7012, sells every position at market, and turns live mode OFF. Press and hold for 2 seconds.</p>
+<button id="b"><i id="f"></i><span id="t">HOLD TO KILL</span></button>
+<div id="out"></div>
+<small id="who"></small>
+</div>
+<script src="config.js"></script>
+<script>
+// The link carries who + a signed key in the #fragment (never sent to a server log). Saved as a bookmark on Ifoma's and Josh's phones.
+const h=new URLSearchParams(location.hash.slice(1)),who=h.get("who")||"",k=h.get("k")||"";
+const b=document.getElementById("b"),f=document.getElementById("f"),t=document.getElementById("t"),out=document.getElementById("out");
+document.getElementById("who").textContent=who?("Link for "+who):"This link is missing its key.";
+if(!who||!k){b.disabled=true;b.style.opacity=.4;t.textContent="LINK INCOMPLETE"}
+const O=window.OTTO||{};let t0=0,raf=0,fired=false;
+function step(){const p=Math.min(1,(performance.now()-t0)/2000);f.style.width=p*100+"%";if(p>=1){fire();return}raf=requestAnimationFrame(step)}
+function start(e){e.preventDefault();if(fired||b.disabled)return;t0=performance.now();t.textContent="KEEP HOLDING…";raf=requestAnimationFrame(step)}
+function stop(){if(fired)return;cancelAnimationFrame(raf);f.style.width="0";t.textContent="HOLD TO KILL"}
+["mousedown","touchstart"].forEach(e=>b.addEventListener(e,start));["mouseup","mouseleave","touchend","touchcancel"].forEach(e=>b.addEventListener(e,stop));
+async function fire(){fired=true;t.textContent="KILLING…";
+  try{const r=await fetch(O.url+"/functions/v1/winston?fn=kill&who="+encodeURIComponent(who)+"&k="+encodeURIComponent(k),{method:"POST",headers:{apikey:O.anon,authorization:"Bearer "+O.anon,"content-type":"application/json"},body:"{}"});
+    const j=await r.json().catch(()=>({ok:false,error:"HTTP "+r.status}));
+    if(j.ok){out.innerHTML=`<span class="ok"><b>Done.</b> Cancelled ${j.cancelled||0} order(s), closed ${j.closed||0} position(s), live mode is OFF.</span>`+((j.errors||[]).length?`<br><span class="bad">Some steps failed — open Robinhood and check: ${j.errors.join("; ")}</span>`:"");t.textContent="KILLED"}
+    else{out.innerHTML=`<span class="bad">It did not go through: ${String(j.error||"error")}. Open Robinhood and close the position by hand.</span>`;t.textContent="TRY AGAIN";fired=false;f.style.width="0"}
+  }catch(e){out.innerHTML=`<span class="bad">No connection. Open Robinhood and close the position by hand.</span>`;t.textContent="TRY AGAIN";fired=false;f.style.width="0"}
+}
+</script></body></html>

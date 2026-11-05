@@ -68,3 +68,25 @@ Deno.test("v5.3.1 token usage is whatever the answering model reported (the cost
   const r = await W.aiJson("SYS", "USER", TOOL);
   assert(r.usage.input === 100 && r.usage.output === 20, "usage comes from the Sonnet answer, not the discarded Opus reply");
 });
+
+// ---------- v5.4.1 (4 Nov 2026): Opus answers with SEVERAL tool calls; every one is read ----------
+Deno.test("v5.4.1 Opus replies with three decide calls (one per idea): all three are merged into one answer; blocks and stop_reason are reported; max_tokens is 6000", async () => {
+  reset("ok", "ok");
+  const saved = (globalThis as any).fetch;
+  (globalThis as any).fetch = (u: any, init: any) => {
+    const body = JSON.parse(init.body); CALLS.push({ model: body.model, body, hasSignal: !!init.signal });
+    return reply({ stop_reason: "end_turn", content: [
+      { type: "text", text: "Looking at the four posts." },
+      { type: "tool_use", id: "t1", name: "decide", input: { decisions: [{ ticker: "GOOGL", source: "coach:611" }], passes: [], notes: "" } },
+      { type: "tool_use", id: "t2", name: "decide", input: { decisions: [], passes: [{ ticker: "FSLR", source: "coach:612", reason: "not in my list" }], notes: "mixed tape" } },
+      { type: "tool_use", id: "t3", name: "decide", input: { decisions: [{ ticker: "AMD", source: "coach:616" }], passes: [{ ticker: "AAPL", source: "coach:614", reason: "past 5%" }] } },
+    ], usage: { input_tokens: 5000, output_tokens: 900 } });
+  };
+  try {
+    const r = await W.aiJson("SYS", "USER", TOOL);
+    assert(CALLS.length === 1 && CALLS[0].body.max_tokens === 6000, "one Opus call with the 6000 cap: " + JSON.stringify(CALLS[0]?.body.max_tokens));
+    assert(r.out.decisions.length === 2 && r.out.passes.length === 2 && r.out.notes === "mixed tape", "all three calls merged: " + JSON.stringify(r.out));
+    assert(r.meta?.blocks === 3 && r.meta?.stop === "end_turn", "meta reports 3 blocks + stop reason: " + JSON.stringify(r.meta));
+    assert(!LOG.some((l) => l.kind === "ai_fallback"), "no fallback");
+  } finally { (globalThis as any).fetch = saved; }
+});

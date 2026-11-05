@@ -3722,6 +3722,52 @@ export async function winstonGateway(body: any) {
   }
 }
 
+/* ===================================================================== v4.9 Winston LIVE gateway (dry first)
+   4 Nov 2026. Winston still holds no Robinhood sign-in. The live plumbing asks THIS route, which is: cron-secret only; house account only;
+   closed unless winston_settings.config.live_mode is dry or on; a small allow-list; account_number always forced to the agentic account;
+   review_* in dry and on; place_* / cancel_* ONLY in mode "on" (and a new BUY never while kill_now is set or above the contract cap). */
+export const WINSTON_LIVE_READ = new Set(["get_accounts", "get_portfolio", "get_option_positions", "get_option_orders", "get_trade_approval_setting"]);
+export const WINSTON_LIVE_TOOLS = new Set([...WINSTON_LIVE_READ, "review_option_order", "place_option_order", "cancel_option_order"]);
+export function winstonLiveCheck(tool: unknown, args: unknown, mode: string, killNow: boolean, maxContracts: number): { ok: true } | { ok: false; error: string } {
+  const tl = String(tool || "");
+  if (mode !== "dry" && mode !== "on") return { ok: false, error: "live mode is off" };
+  if (!WINSTON_LIVE_TOOLS.has(tl)) return { ok: false, error: "tool not on the live allow-list: " + tl };
+  if (args != null && (typeof args !== "object" || Array.isArray(args))) return { ok: false, error: "args must be an object" };
+  const a: any = args || {};
+  if (/^(place|cancel)_/.test(tl) && mode !== "on") return { ok: false, error: tl + " is refused unless live mode is on" };
+  if (tl === "place_option_order" || tl === "review_option_order") {
+    const legs = Array.isArray(a.legs) ? a.legs : [];
+    if (legs.length !== 1) return { ok: false, error: "exactly one leg" };
+    const qty = Math.floor(Number(a.quantity));
+    if (!(qty >= 1)) return { ok: false, error: "quantity must be at least 1" };
+    const opening = legs[0]?.position_effect === "open";
+    if (opening && legs[0]?.side !== "buy") return { ok: false, error: "an opening leg must be a buy" };
+    if (opening && qty > Math.max(1, maxContracts)) return { ok: false, error: "over the contract cap" };
+    if (opening && tl === "place_option_order" && killNow) return { ok: false, error: "kill is set: no new entries" };
+    if (!opening && legs[0]?.side !== "sell") return { ok: false, error: "a closing leg must be a sell" };
+    if (tl === "place_option_order" && !a.ref_id) return { ok: false, error: "ref_id required" };
+  }
+  return { ok: true };
+}
+export async function winstonLive(body: any) {
+  try {
+    const cr: any = ((await db("winston_settings?key=eq.config&select=value"))?.[0]?.value) || {};
+    const lim: any = ((await db("winston_settings?key=eq.live_limits&select=value"))?.[0]?.value) || {};
+    const kill = !!((await db("winston_settings?key=eq.kill_now&select=value"))?.[0]?.value?.at);
+    const mode = String(cr.live_mode || "off");
+    const tool = String(body?.tool || "");
+    const chk = winstonLiveCheck(tool, body?.args, mode, kill, Number(lim.contracts) || 1);
+    if (!chk.ok) return { status: 403, out: { ok: false, error: chk.error } };
+    const args: any = { ...(body.args || {}) };
+    if (tool !== "get_accounts") args.account_number = await agenticAccount();
+    const res = await call("rh", tool, args);
+    const j = mcpJson(res);
+    return { status: 200, out: { ok: true, data: j ?? mcpText(res).slice(0, 60000) } };
+  } catch (e) {
+    return { status: 502, out: { ok: false, error: String((e as Error).message || e).slice(0, 300) } };
+  }
+}
+
 function background(p: Promise<unknown>) {
   const er = (globalThis as any).EdgeRuntime;
   if (er?.waitUntil) er.waitUntil(p.catch((e) => console.error("background", e))); else p.catch((e) => console.error("background", e));
@@ -8202,6 +8248,12 @@ Deno.serve(async (req) => {
     if (!cronAllowed(req)) return json({ ok: false, error: "bad cron secret" }, 401);
     if (req.method !== "POST") return json({ ok: false, error: "POST only" }, 405);
     const g = await winstonGateway(await req.json().catch(() => ({})));
+    return json(g.out, g.status);
+  }
+  if (fn0 === "winston_live") {      // v4.9: live plumbing for Winston (cron secret only; closed unless live_mode is dry/on)
+    if (!cronAllowed(req)) return json({ ok: false, error: "bad cron secret" }, 401);
+    if (req.method !== "POST") return json({ ok: false, error: "POST only" }, 405);
+    const g = await winstonLive(await req.json().catch(() => ({})));
     return json(g.out, g.status);
   }
   if (fn0 === "cron_charts") {      // v3.25: every 10 min; works only in the night (8:30–10 PM) and 8:45 AM windows
