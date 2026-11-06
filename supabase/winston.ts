@@ -329,7 +329,8 @@ export type GateCtx = { rules: Rule[]; d: Decision; cap: number; maxLoss: number
   dataMode?: boolean; reentryBeyondExit?: string | null; atCoachLevel?: string | null; indexDisagree?: string | null; thesisWrong?: string | null; coachResultAfter?: string | null;
   // v3.44 — the coach, 22 Oct 2026 (stamps in data mode, blocks in strict mode when the rule is on)
   defensiveCall?: string | null; openReprice?: string | null; moveDone?: string | null;
-  newsOnly?: string | null };   // v4.4 N1: an own idea that rests on a headline alone and price has not confirmed it
+  newsOnly?: string | null;
+  trendAgainst?: string | null };   // v5.5 T1: a coach-level trade against the trend (hard)   // v4.4 N1: an own idea that rests on a headline alone and price has not confirmed it
 export type GateHit = { rule: string; why: string; soft: boolean };
 // HARD gates always block: the plan itself (W1), risk and size (W2), cash, the max open count and the time windows.
 // SOFT gates (W13-W15, W20-W26) block in strict mode; in data mode they STAMP the trade (flags) so the report can score each gate.
@@ -340,7 +341,9 @@ export type GateHit = { rule: string; why: string; soft: boolean };
 // also the coach's. Rollback = put "W3" back in this set. The pass reason stays "W3: …" so the Winston tab shows it.
 // v5.3 (Ifoma, 3 Nov): W20 (re-entry chase: 8 trades, 1 win, −$162) and `fact` (thesis contradicts the chart: 2 Nov ABT −$45 in 18 min) are HARD in every mode.
 // Rollback = put "W20" / "fact" back in this set. Blocks still book a shadow, so the ledger keeps scoring both.
-const SOFT = new Set(["W13", "W14", "W15", "W21", "W22", "W23", "W24", "W25", "W26", "N1"]);   // v4.4: N1 = headline-only idea (stamps in data mode, blocks in strict)
+// v5.5 (coach, 5 Nov; Ifoma "build all six"): W21 (no entry within $0.50 of a coach level that is his target) is HARD — 4 Nov SPY 762P −$111 shorted into 764.35.
+// Rollback = put "W21" back. T1 (trend gate) is hard and never in this set.
+const SOFT = new Set(["W13", "W14", "W15", "W22", "W23", "W24", "W25", "W26", "N1"]);   // v4.4: N1 = headline-only idea (stamps in data mode, blocks in strict)
 export function runGatesAll(c: GateCtx): GateHit[] {
   const R = c.rules, hits: GateHit[] = [];
   const hit = (rule: string, why: string) => hits.push({ rule, why, soft: !!c.dataMode && SOFT.has(rule) });
@@ -381,7 +384,8 @@ export function runGatesAll(c: GateCtx): GateHit[] {
   if (ruleOn(R, "W24") && c.defensiveCall) hit("W24", c.defensiveCall);                   // bonds first: Nasdaq red + Treasuries bid = puts, not calls
   if (ruleOn(R, "W25") && c.openReprice) hit("W25", c.openReprice);                       // options reprice in the first 15; after earnings wait the full 30
   if (ruleOn(R, "W26") && c.moveDone) hit("W26", c.moveDone);                             // don't chase a move that's done
-  if (c.newsOnly) hit("N1", c.newsOnly);                                                    // v4.4: a headline alone is not a trade (TradeTrap: fake news cut an agent's return by half)
+  if (c.newsOnly) hit("N1", c.newsOnly);
+  if (c.trendAgainst) hit("T1", c.trendAgainst);                                          // v5.5 C: trend first (hard in every mode)                                                    // v4.4: a headline alone is not a trade (TradeTrap: fake news cut an agent's return by half)
   return hits;
 }
 // Returns the first HARD reason to pass (with the rule id), or null when nothing blocks. Soft stamps come from runGatesAll.
@@ -542,7 +546,7 @@ export function afterExit(plan: { dir: "up" | "down"; target_level: number; wron
   const closeUnder = d[d.length - 1].c, closeMove = round2(up ? closeUnder - exitUnder : exitUnder - closeUnder);
   return { would, at: at ? new Date(at).toISOString() : null, mfe_after: mfe, mae_after: mae, mfe_after_r: perR ? round2(mfe * perR) : null, close_move: closeMove, close_move_r: perR ? round2(closeMove * perR) : null, close_under: closeUnder, bars: d.length };
 }
-export const EARLY_EXITS = ["coach_exit", "time", "trail", "breakeven"];
+export const EARLY_EXITS = ["coach_exit", "time", "trail", "breakeven", "rebalance"];   // v5.5 F
 export const VWAP_VARIANCE_PCT = 0.3;   // v5.0.1 (2 Nov, Ifoma: "go with your default"): the coach's reclaim variance is "a % of price"; 0.3% is the starting default.
 
 // v5.0.1: breakeven on the OPTION, not only the stock. 30 Oct TSLA 405C: the stop moved to the entry price (400.15) at +0.5R, the stock
@@ -982,11 +986,13 @@ export async function shadowState() {
 
 type Ctx = { cfg: any; L: any; rules: Rule[]; day: string; min: number; eq: Awaited<ReturnType<typeof equityState>>; lim: ReturnType<typeof limitsState>;
   posts?: any[]; index?: IndexRead; vwaps?: Record<string, number>;
-  quotes?: Record<string, { spot: number; prev: number }>; tape?: TapeRead; reported?: string[]; dctx?: Record<string, any> };   // v3.44: day change, bonds-first tape, last night's reporters   // v3.36: today's coach posts, the SPY read and each focus ticker's VWAP
+  quotes?: Record<string, { spot: number; prev: number }>; tape?: TapeRead; reported?: string[]; dctx?: Record<string, any>;
+  trends?: Record<string, TrendRead | null>; bias?: Record<string, Bias>; event?: EventDay | null };   // v5.5: C trend, A day bias, D event day   // v3.44: day change, bonds-first tape, last night's reporters   // v3.36: today's coach posts, the SPY read and each focus ticker's VWAP
 
 // Turn one decision into a paper trade, or a passed/blocked idea with the reason. Never throws past this point.
-export async function tryOpen(ctx: Ctx, d: Decision, spot: number, coachCall: boolean, blackout: string | null = null): Promise<{ opened: boolean; why: string; tradeId?: number }> {
+export async function tryOpen(ctx: Ctx, d: Decision, spot: number, coachCall: boolean, blackout: string | null = null, v55: { levelTrade?: boolean } = {}): Promise<{ opened: boolean; why: string; tradeId?: number }> {
   const { cfg, rules, day, min, eq, lim } = ctx;
+  const biasOk = biasAgrees(ctx.bias?.[String(d.ticker).toUpperCase()], d.side), evOk = withSentiment(ctx.event, d.side);   // v5.5 A / D
   d.ticker = String(d.ticker).toUpperCase().replace(/[^A-Z.]/g, "");
   const bad = planProblem(d, spot);
   if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); return { opened: false, why: bad }; }
@@ -1019,8 +1025,9 @@ export async function tryOpen(ctx: Ctx, d: Decision, spot: number, coachCall: bo
     indexDisagree: d.ticker === "SPY" && d.side === "call" ? null : indexDisagree(d.side, ctx.index ?? null),
     thesisWrong: thesisVwapWrong(d.thesis, spot, ctx.vwaps?.[d.ticker], d.ticker), coachResultAfter: citedId ? coachResultAfter(citedId, d.ticker, ctx.posts || []) : null,
     defensiveCall: defensiveCall(d.side, ctx.tape ?? null), openReprice: openReprice(d.ticker, min, ctx.reported || [], ruleParams(rules, "W25")),
-    moveDone: moveDone(d.side, d.ticker, ctx.quotes?.[d.ticker], ruleParams(rules, "W26")),
-    newsOnly: newsOnlyProblem(d, ctx.quotes?.[d.ticker]) });
+    moveDone: biasOk ? null : moveDone(d.side, d.ticker, ctx.quotes?.[d.ticker], evOk ? { ...ruleParams(rules, "W26"), stock_pct: Math.max(8, num(ruleParams(rules, "W26").stock_pct)), index_pct: Math.max(2.5, num(ruleParams(rules, "W26").index_pct)) } : ruleParams(rules, "W26")),   // v5.5 A: no chase line with the day bias; D: 8% / 2.5% with the sentiment
+    newsOnly: newsOnlyProblem(d, ctx.quotes?.[d.ticker]),
+    trendAgainst: coachCall && v55.levelTrade !== false ? trendGateProblem(d.side, ctx.trends?.[d.ticker], biasOk) : null });
   const gate = hits.find((h) => !h.soft);
   if (gate) { await recordIdea(day, d, "blocked", `${gate.rule}: ${gate.why}`); await bookShadow(day, d, spot, gate.rule, gate.why); return { opened: false, why: gate.rule + ": " + gate.why }; }   // v4.5: the rule ledger
   const atrNote = stopVsAtr(d.wrong_if_level, spot, ctx.dctx?.[d.ticker]?.atr14);                 // v4.4: stamp only, never blocks
@@ -1031,7 +1038,8 @@ export async function tryOpen(ctx: Ctx, d: Decision, spot: number, coachCall: bo
     contract: { exp: row.exp, strike: row.strike }, last_mark: { bid: ef.bid, ask: ef.ask, under: spot, at: new Date(nowMs()).toISOString() },
     mode: dataMode ? "data" : "strict", stamps, index: ctx.index ?? null, tape: ctx.tape ?? null, vwap_at_entry: ctx.vwaps?.[d.ticker] ?? null,
     spread_pct: ef.mid > 0 ? round2((ef.ask - ef.bid) / ef.mid * 100) : null,                     // v4.3: what the spread cost him at the fill
-    wrong_if_orig: d.wrong_if_level, trigger_level: num(d.trigger_level) > 0 ? num(d.trigger_level) : null };   // v4.3: winner protection moves wrong_if; the original is kept
+    wrong_if_orig: d.wrong_if_level, trigger_level: num(d.trigger_level) > 0 ? num(d.trigger_level) : null,
+    v55: { day_bias: biasOk ? { dir: ctx.bias![d.ticker].dir, level: ctx.bias![d.ticker].level, name: ctx.bias![d.ticker].name } : null, event_with: evOk, trend: ctx.trends?.[d.ticker]?.trend || null } };   // v5.5: scored later   // v4.3: winner protection moves wrong_if; the original is kept
   const ideaId = await recordIdea(day, d, "taken", (stamps.length ? "[stamped: " + stamps.map((s) => s.split(":")[0]).join(", ") + "] " : "") + (d.thesis || "taken"), plan);
   const t = await db("winston_trades", { method: "POST", body: JSON.stringify({ day, opened_at: new Date(nowMs()).toISOString(), status: "open", ticker: d.ticker, side: d.side, option_id: row.id, label: row.label, qty: 1,
     source: d.source || "own", idea_id: ideaId, experiment: d.experiment || null, plan, entry_bid: ef.bid, entry_ask: ef.ask, entry_mid: round2(ef.mid * 1000) / 1000, entry_fill: ef.fill, entry_under: spot,
@@ -1080,6 +1088,7 @@ export async function manageOpen(cfg: any, day: string, min: number, closeMin: n
   const w22 = ruleOn(rules, "W22");
   const flatMin = Math.min(num(cfg.flat_min) || 950, closeMin - 10);
   let closed = 0;
+  let dcm: Record<string, any> = {}; try { const cch = await getSetting("daily_ctx"); if (cch?.day === day && cch.by) dcm = cch.by; } catch { /* no ATR = the VWAP / prior-bar legs only */ }
   let bars: Record<string, Bar[]> = {};
   try { bars = await bars10(open.map((t) => String(t.ticker)), day); } catch (e) { await wlog("bars_error", { msg: String((e as Error).message).slice(0, 160) }); }
   for (const t of open) {
@@ -1087,12 +1096,13 @@ export async function manageOpen(cfg: any, day: string, min: number, closeMin: n
     const entered = Date.parse(t.opened_at);
     const tb = bars[String(t.ticker).toUpperCase()] || null;
     const ev = tb ? evalBars({ dir: t.plan.dir, wrong_if_level: num(t.plan.wrong_if_level), target_level: num(t.plan.target_level), stop_from_ms: t.plan.stop_from_ms }, tb, entered) : null;
-    let reason: string | null = null, flags: string[] = [];
+    let reason: string | null = null, flags: string[] = [], rbx: string | null = null;
     let q: { bid: number; ask: number } | null = null; try { q = await freshOptionQuote(t.option_id); } catch { q = null; }   // v5.0.1: read the contract first — the floor needs it
     if (ev) { reason = ev.reason === "wrong_if" && t.plan.trail ? "trail" : ev.reason === "wrong_if" && t.plan.breakeven_at ? "breakeven" : ev.reason; flags = ev.flags; }   // v4.3: a moved stop that fires is "trail" / "breakeven"
     else if (optionFloorHit(t.plan, num(t.entry_fill), q?.bid)) { reason = "breakeven"; flags = ["option_floor"]; }   // v5.0.1: protected trade, premium back to what he paid
     else if (opt.intrabar && tb && intrabarTarget({ dir: t.plan.dir, target_level: num(t.plan.target_level) }, tb, entered)) { reason = "target"; flags = ["intrabar_touch"]; }
     else if (min >= flatMin || t.day !== day) reason = "flat_close";
+    else if (tb && t.day === day && (rbx = rebalanceExit(t.plan, tb, entered, num(t.entry_under), day, dcm[String(t.ticker).toUpperCase()]?.atr14))) { reason = "rebalance"; flags = ["rebalance_exit"]; await wlog("rebalance", { id: t.id, why: rbx }); }   // v5.5 F
     else if (w22 && tb && coachExit({ dir: t.plan.dir }, tb, entered)) { reason = "coach_exit"; flags = ["W22_indecision_then_no_new_high"]; }   // v3.36
     else if (nowMs() >= entered + num(t.plan.time_exit_min || 180) * 60e3) reason = "time";
     if (reason) { await closeTrade(t, reason, flags, tb); closed++; continue; }
@@ -1179,7 +1189,7 @@ export function premarketRange(bars5: Bar[], day: string) {
   const pm = (bars5 || []).filter((b) => b.t < open && b.t >= etToUtcMs(day, 240));
   return pm.length ? { pm_h: Math.max(...pm.map((b) => b.h)), pm_l: Math.min(...pm.map((b) => b.l)) } : null;
 }
-async function dailyContext(symbols: string[], day: string, reported: string[] = []): Promise<Record<string, any>> {
+async function dailyContext(symbols: string[], day: string, reported: string[] = [], opt: { save?: boolean } = {}): Promise<Record<string, any>> {   // v5.5: save:false = the 8:45 homework read (the pre-market range is not finished yet, so it is not cached)
   let cache: any = null; try { cache = await getSetting("daily_ctx"); } catch { cache = null; }
   const by: Record<string, any> = cache?.day === day && cache.by ? { ...cache.by } : {};
   const missing = [...new Set(symbols)].filter((s) => !by[s]);
@@ -1197,14 +1207,26 @@ async function dailyContext(symbols: string[], day: string, reported: string[] =
       try { Object.assign(atr, parseAtr(await md("rh", "get_equity_technical_indicators", { type: "atr", interval: "day", period: 14, start_time: new Date(etToUtcMs(addDays(day, -45), 570)).toISOString(), symbols: missing.slice(i, i + 10), output: "latest" }))); } catch { /* unavailable */ }
     }
     try { an = parseAnalysts(await md("rh", "get_equity_analyst_ratings", { symbols: missing.slice(0, 75) })); } catch { /* unavailable */ }
-    for (const s of missing) by[s] = { ...(dailySummary(daily[s] || [], day) || { unavailable: true }), ...(premarketRange(pm[s] || [], day) || {}), ...(atr[s] ? { atr14: atr[s] } : {}), ...(an[s] ? { an: an[s] } : {}) };
+    // v5.5 C/E: 30-minute bars for the 4-hour structure (two half-sessions a day). Probed 5 Nov: Robinhood's 4hour bars start at 16:00Z and its hour bars at 15:00Z — both skip the open; 30minute starts at 14:30Z.
+    let hour: Record<string, Bar[]> = {};
+    for (let i = 0; i < missing.length; i += 10) {
+      try { Object.assign(hour, parseBars(await md("rh", "get_equity_historicals", { symbols: missing.slice(i, i + 10), interval: "30minute", start_time: new Date(etToUtcMs(addDays(day, -8), 570)).toISOString() }))); } catch { /* unavailable */ }
+    }
+    const dayStart = etToUtcMs(day, 0);
+    for (const s of missing) {
+      by[s] = { ...(dailySummary(daily[s] || [], day) || { unavailable: true }), ...(premarketRange(pm[s] || [], day) || {}), ...(atr[s] ? { atr14: atr[s] } : {}), ...(an[s] ? { an: an[s] } : {}) };
+      if (!by[s].unavailable) {
+        const hw = homework(daily[s] || [], day); if (hw) by[s].hw = hw;
+        const h4 = halfDays((hour[s] || []).filter((b) => b.t < dayStart)).slice(-6).map((x) => [round2(x.h), round2(x.l)]); if (h4.length) by[s].h4 = h4;
+      }
+    }
     dirty = true;
   }
   // v4.4: the EPS result of a name that reported since yesterday's close (estimate vs actual), one call per name, once a day.
   for (const s of [...new Set(reported.map((x) => String(x).toUpperCase()))].filter((x) => by[x] && by[x].er === undefined).slice(0, 4)) {
     try { by[s] = { ...by[s], er: lastReport(await md("rh", "get_earnings_results", { symbol: s })) }; dirty = true; } catch { /* unavailable */ }
   }
-  if (dirty) { try { await putSetting("daily_ctx", { day, by, at: new Date(nowMs()).toISOString() }); } catch { /* cache miss is fine */ } }
+  if (dirty && opt.save !== false) { try { await putSetting("daily_ctx", { day, by, at: new Date(nowMs()).toISOString() }); } catch { /* cache miss is fine */ } }
   return by;
 }
 export const ctxLine = (c: any) => !c || c.unavailable ? "daily context unavailable" :
@@ -1213,6 +1235,50 @@ export const ctxLine = (c: any) => !c || c.unavailable ? "daily context unavaila
   (c.atr14 ? ` · daily ATR14 ${c.atr14}` : "") +
   (c.an ? ` · analysts ${c.an.buy}B/${c.an.hold}H/${c.an.sell}S${c.an.target ? ", mean target " + c.an.target : ""}` : "") +
   (c.er ? ` · last report ${c.er.q}: EPS ${c.er.actual} vs est ${c.er.estimate}${c.er.surprise_pct != null ? " (" + (c.er.surprise_pct >= 0 ? "+" : "") + c.er.surprise_pct + "%)" : ""}` : "");
+
+// v5.5 E: the homework line for one name (live distance from the 20-day VWAP).
+export function hwLine(c: any, spot: number): string {
+  const h = c?.hw; if (!h) return "unavailable";
+  const parts = [`5d ${h.l5}-${h.h5}`];
+  if (h.gaps?.length) parts.push("unfilled gaps " + h.gaps.map((g: any) => `${g.lo}-${g.hi} (${g.dir}, ${g.on})`).join(", "));
+  if (h.swing) parts.push(`60d swing ${h.swing.dir} ${h.swing.lo}-${h.swing.hi}: 50% ${h.swing.f50}, 61.8% ${h.swing.f618}`);
+  if (num(h.vwap20) > 0 && spot > 0) { const dv = round2(spot - h.vwap20); parts.push(`20d VWAP ${h.vwap20} (${dv >= 0 ? "+" : "-"}$${Math.abs(dv)}${num(c.atr14) > 0 ? `, ${round2(dv / num(c.atr14))} ATR` : ""})`); }
+  if (h.d_struct) parts.push(`daily structure ${h.d_struct}`);
+  return parts.join(" · ");
+}
+// v5.5 A: today's day biases (winston_settings day_bias). Set from the 9:30 bar, re-checked until 9:55 for late pre-market posts; cleared on a reclaim close.
+export async function loadBias(day: string): Promise<Record<string, Bias>> { const st = await getSetting("day_bias").catch(() => null); return st?.day === day && st.by ? st.by : {}; }
+export async function updateBias(day: string, min: number, focus: string[], quotes: Record<string, { spot: number; prev: number }>, bars: Record<string, Bar[]>, posts: any[], dctx: Record<string, any>, now = nowMs()): Promise<Record<string, Bias>> {
+  const st = (await getSetting("day_bias").catch(() => null)) || {};
+  const same = st.day === day, by: Record<string, Bias> = same && st.by ? { ...st.by } : {};
+  let dirty = !same;
+  if (now >= etToUtcMs(day, 580) && min <= 595) {
+    for (const s of focus) {
+      if (by[s] || !quotes[s]) continue;
+      const b = biasFromOpen(s, num(quotes[s].prev), bars[s] || [], day, coachOpenLevels(posts, s), keyLevels(dctx[s]));
+      if (b) { by[s] = b; dirty = true; await wlog("bias_set", { ticker: s, dir: b.dir, level: b.level, name: b.name, source: b.source }); }
+    }
+  }
+  for (const s of Object.keys(by)) {
+    const b = by[s]; if (b.cleared_ms || !bars[s]) continue;
+    const r = biasReclaim(b, bars[s], now);
+    if (r) { by[s] = { ...b, cleared_ms: r.t + 10 * 60e3, cleared_close: r.c }; dirty = true; await wlog("bias_clear", { ticker: s, level: b.level, close: r.c }); }
+  }
+  if (dirty) await putSetting("day_bias", { day, by, at: new Date(now).toISOString() }).catch(() => {});
+  return by;
+}
+// v5.5 D: the routine stores the scheduled + catalyst half; the tick adds the open (tape) half.
+export async function loadEvent(day: string): Promise<EventDay | null> { const st = await getSetting("event_day").catch(() => null); return st?.day === day && st.read ? st.read : null; }
+export async function updateEvent(day: string, min: number, quotes: Record<string, { spot: number; prev: number }>): Promise<EventDay> {
+  const st = (await getSetting("event_day").catch(() => null)) || {};
+  const same = st.day === day;
+  const read = eventDayRead(day, same ? st.macro || [] : [], same ? st.catalyst || [] : [], quotes.QQQ, quotes.TLT, min >= 580);
+  if (!same || JSON.stringify(read) !== JSON.stringify(st.read || null)) {
+    await putSetting("event_day", { day, macro: same ? st.macro || [] : [], catalyst: same ? st.catalyst || [] : [], read, at: new Date(nowMs()).toISOString() }).catch(() => {});
+    if (read.on && !(st.read && st.read.on)) await wlog("event_day", read);
+  }
+  return read;
+}
 
 /* ------------------------------------------------------------------ v4.4: input hardening, ATR / analyst / EPS context, scanner (shadow) */
 
@@ -1360,8 +1426,205 @@ export function coachLevelProblem(d: { side: "call" | "put"; trigger_level?: num
   if (past > chasePct) return { rule: "C2", why: `Chasing the coach's level: ${d.ticker || ""} ${spot} is already ${past.toFixed(2)}% past ${trig} (limit ${chasePct}%) — let price come to you` };
   return null;
 }
+/* ------------------------------------------------------------------ v5.5 COACH RULES (coach call 5 Nov 2026; Ifoma: "build all six")
+   A  a pre-market key level already CLOSED through on the first 10-minute bar = the day's direction (day_bias) until a close reclaims it;
+      entries with the bias skip the chase lines and wait for the first REBALANCE (a bounce of >= 0.3 daily ATR, then a 10-minute close back with the bias).
+   B  a coach call with a side and no number is never entered at the price: it is ARMED as a retrace to intraday VWAP (90 minutes, then dropped + shadow).
+   C  trend first: a coach-level trade against the 4h trend (daily when the 4h read is mixed) is refused (hard, "T1") unless a day_bias agrees; W21 is hard.
+   D  event day (FOMC/CPI/NFP, election day+1, a mega-cap reporter gapping >= 5%, or the DEFENSIVE / RISK-ON open): the W26 chase lines relax to
+      8% single / 2.5% index for trades WITH the sentiment only. Time windows are unchanged (coach 9:31, own ideas 9:45).
+   E  daily homework per name in the context: 5-day range, unfilled daily gaps, 50% / 61.8% of the last 60-day swing, the 20-day VWAP and the trend read.
+   F  winner exit "rebalance": +0.5R then a 10-minute close back through intraday VWAP or a bounce > 1 daily ATR off the extreme; or +0.25R then a
+      10-minute close back through the prior bar's high (put) / low (call). (Ifoma, 5 Nov: both.)  G  W22 unchanged. */
+export type HL = { h: number; l: number };
+export type Trend3 = "up" | "down" | "mixed";
+export function structureOf(bars: HL[], n = 3): Trend3 | null {
+  const b = (bars || []).filter((x) => x && num(x.h) > 0 && num(x.l) > 0);
+  if (b.length < n * 2) return null;
+  const a = b.slice(-2 * n, -n), c = b.slice(-n);
+  const ah = Math.max(...a.map((x) => x.h)), al = Math.min(...a.map((x) => x.l)), ch = Math.max(...c.map((x) => x.h)), cl = Math.min(...c.map((x) => x.l));
+  if (ch > ah && cl > al) return "up";
+  if (ch < ah && cl < al) return "down";
+  return "mixed";
+}
+// Intraday bars (30-minute or 10-minute) → two "4-hour" bars per session: open–12:30 ET and 12:30–close. Robinhood's own 4hour bars start at 16:00Z and skip the open.
+export function halfDays(bars: Bar[]): (HL & { key: string })[] {
+  const by = new Map<string, HL & { key: string }>();
+  for (const x of [...(bars || [])].sort((p, q) => p.t - q.t)) {
+    const e = etParts(new Date(x.t)); if (e.min < 570 || e.min >= 960) continue;
+    const key = e.date + (e.min < 750 ? "a" : "p");
+    const cur = by.get(key);
+    if (!cur) by.set(key, { key, h: x.h, l: x.l }); else { cur.h = Math.max(cur.h, x.h); cur.l = Math.min(cur.l, x.l); }
+  }
+  return [...by.values()];
+}
+export function vwapDaily(daily: Bar[], day: string, n = 20): number | null {
+  const d = (daily || []).filter((b) => new Date(b.t).toISOString().slice(0, 10) < day).sort((a, b) => a.t - b.t).slice(-n);
+  if (d.length < Math.min(n, 5)) return null;
+  let pv = 0, v = 0; for (const x of d) { const w = x.v > 0 ? x.v : 1; pv += w * (x.h + x.l + x.c) / 3; v += w; }
+  return v ? round2(pv / v) : null;
+}
+// E: the coach's homework from the daily chart. Pure; daily bars before `day` only.
+export function homework(daily: Bar[], day: string) {
+  const all = (daily || []).filter((b) => new Date(b.t).toISOString().slice(0, 10) < day).sort((a, b) => a.t - b.t);
+  if (all.length < 5) return null;
+  const d5 = all.slice(-5), d20 = all.slice(-20), d60 = all.slice(-60);
+  const gaps: { lo: number; hi: number; dir: "up" | "down"; on: string }[] = [];
+  for (let i = Math.max(1, all.length - 20); i < all.length; i++) {
+    const p = all[i - 1], c = all[i], later = all.slice(i + 1);
+    if (c.l > p.h) {                                                              // gap up: [prev high, this low]; filled from above by later lows
+      const lo = p.h, hi = Math.min(c.l, ...later.map((b) => b.l));
+      if (hi > lo) gaps.push({ lo: round2(lo), hi: round2(hi), dir: "up", on: new Date(c.t).toISOString().slice(0, 10) });
+    } else if (c.h < p.l) {                                                       // gap down: [this high, prev low]; filled from below by later highs
+      const hi = p.l, lo = Math.max(c.h, ...later.map((b) => b.h));
+      if (hi > lo) gaps.push({ lo: round2(lo), hi: round2(hi), dir: "down", on: new Date(c.t).toISOString().slice(0, 10) });
+    }
+  }
+  let swing: any = null;
+  if (d60.length >= 10) {
+    let hi = -Infinity, lo = Infinity, hiAt = 0, loAt = 0;
+    d60.forEach((b, i) => { if (b.h > hi) { hi = b.h; hiAt = i; } if (b.l < lo) { lo = b.l; loAt = i; } });
+    const r = hi - lo, down = loAt > hiAt;                                        // the later extreme is where the swing ended
+    swing = { hi: round2(hi), lo: round2(lo), dir: down ? "down" : "up", f50: round2(down ? lo + 0.5 * r : hi - 0.5 * r), f618: round2(down ? lo + 0.618 * r : hi - 0.618 * r) };
+  }
+  return { h5: Math.max(...d5.map((b) => b.h)), l5: Math.min(...d5.map((b) => b.l)), gaps: gaps.slice(-4), swing, vwap20: vwapDaily(all, day, 20),
+    d_struct: structureOf(d20.map((b) => ({ h: b.h, l: b.l })), 5) };
+}
+// The named daily levels a day_bias can come from (A). c = one name's cached daily context.
+export function keyLevels(c: any): { level: number; name: string }[] {
+  if (!c || c.unavailable) return [];
+  const out: { level: number; name: string }[] = [];
+  const add = (v: any, name: string) => { if (num(v) > 0) out.push({ level: round2(num(v)), name }); };
+  add(c.mo_l, "prior-month low"); add(c.mo_h, "prior-month high"); add(c.wk_l, "last week's low"); add(c.wk_h, "last week's high");
+  for (const g of c.hw?.gaps || []) { add(g.lo, `gap ${g.on} edge`); add(g.hi, `gap ${g.on} edge`); }
+  add(c.hw?.swing?.f618, "61.8% of the swing"); add(c.hw?.swing?.f50, "50% of the swing");
+  add(c.y_l, "yesterday's low"); add(c.y_h, "yesterday's high");
+  return out;
+}
+export const labelMin = (s: any): number | null => { const m = /(\d{1,2}):(\d{2})\s*(AM|PM)/i.exec(String(s || "")); if (!m) return null; let h = +m[1] % 12; if (/PM/i.test(m[3])) h += 12; return h * 60 + +m[2]; };
+// The levels the coach posted before 9:45 for one ticker (his pre-market levels).
+export function coachOpenLevels(posts: any[], ticker: string): { level: number; name: string; source: string }[] {
+  return (posts || []).filter((p) => p.kind === "level" && String(p.ticker || "").toUpperCase() === ticker && num(p.level) > 0 && (labelMin(p.posted_label) ?? 999) < 585)
+    .map((p) => ({ level: num(p.level), name: "the coach's " + num(p.level), source: "coach:" + p.id }));
+}
+export type Bias = { ticker: string; dir: "short" | "long"; level: number; name: string; source: string; set_ms: number; cleared_ms?: number | null; cleared_close?: number | null };
+// A: prev close on one side of a level and the first 10-minute close (9:30 bar, done by 9:40) on the other = the day's direction. Coach levels win, then month, week, gap, swing, yesterday.
+export function biasFromOpen(ticker: string, prevClose: number, bars: Bar[], day: string, coachLvls: { level: number; name: string; source: string }[], keys: { level: number; name: string }[]): Bias | null {
+  if (!(prevClose > 0)) return null;
+  const open = etToUtcMs(day, 570);
+  const first = (bars || []).filter((b) => b.t >= open && b.t + 10 * 60e3 <= etToUtcMs(day, 585)).sort((a, b) => a.t - b.t);
+  if (!first.length) return null;
+  const close = first[first.length - 1].c;
+  const cands = [...coachLvls, ...keys.map((k) => ({ ...k, source: "homework" }))];
+  for (const c of cands) {
+    const L = c.level;
+    if (prevClose > L && close < L) return { ticker, dir: "short", level: L, name: c.name, source: c.source, set_ms: first[first.length - 1].t + 10 * 60e3, cleared_ms: null };
+    if (prevClose < L && close > L) return { ticker, dir: "long", level: L, name: c.name, source: c.source, set_ms: first[first.length - 1].t + 10 * 60e3, cleared_ms: null };
+  }
+  return null;
+}
+// A: the bias ends on the first completed 10-minute close back through its level.
+export function biasReclaim(b: Bias, bars: Bar[], now = nowMs()): Bar | null {
+  for (const x of completedBars(bars || [], 10, now).filter((y) => y.t >= b.set_ms).sort((p, q) => p.t - q.t))
+    if (b.dir === "short" ? x.c > b.level : x.c < b.level) return x;
+  return null;
+}
+export const biasAgrees = (b: Bias | null | undefined, side: "call" | "put") => !!b && !b.cleared_ms && ((b.dir === "short" && side === "put") || (b.dir === "long" && side === "call"));
+// A: the first rebalance. Session bars from the open; a bounce of >= minBounce (0.3 daily ATR) against the move from its extreme, then a completed
+// 10-minute bar that ends after `sinceMs` closes back with the bias (put: red bar, lower close; call: green bar, higher close).
+export function rebalanceFire(dir: "up" | "down", bars: Bar[], day: string, sinceMs: number, minBounce: number, now = nowMs()): boolean {
+  const d = completedBars(bars || [], 10, now).filter((b) => b.t >= etToUtcMs(day, 570)).sort((a, b) => a.t - b.t);
+  if (d.length < 2 || !(minBounce > 0)) return false;
+  const last = d[d.length - 1], prev = d[d.length - 2];
+  if (last.t + 10 * 60e3 <= sinceMs) return false;
+  let ext = dir === "down" ? Infinity : -Infinity, bounced = false;
+  for (const b of d.slice(0, -1)) {
+    if (dir === "down") { if (isFinite(ext) && b.h - ext >= minBounce) bounced = true; ext = Math.min(ext, b.l); }
+    else { if (isFinite(ext) && ext - b.l >= minBounce) bounced = true; ext = Math.max(ext, b.h); }
+  }
+  if (!bounced) return false;
+  return dir === "down" ? last.c < last.o && last.c < prev.c : last.c > last.o && last.c > prev.c;
+}
+// B: a bare call (side, no number). After it is armed, price must come back to intraday VWAP (within the reclaim variance) and a completed
+// 10-minute bar must close back with the trend on the right side of VWAP. VWAP is recomputed from the session bars, never frozen.
+export function retraceFire(dir: "up" | "down", bars: Bar[], day: string, sinceMs: number, variancePct = VWAP_VARIANCE_PCT, now = nowMs()): boolean {
+  const d = completedBars(bars || [], 10, now).filter((b) => b.t >= etToUtcMs(day, 570)).sort((a, b) => a.t - b.t);
+  if (d.length < 2) return false;
+  let touched = false;
+  for (let i = 0; i < d.length; i++) {
+    const b = d[i], vw = vwapOf(d.slice(0, i + 1)), band = vw * variancePct / 100;
+    const after = b.t + 10 * 60e3 > sinceMs;
+    if (after && (dir === "up" ? b.l <= vw + band : b.h >= vw - band)) touched = true;
+    if (i === d.length - 1 && touched && after) {
+      const prev = d[i - 1];
+      return dir === "up" ? b.c > vw && b.c > b.o && b.c > prev.c : b.c < vw && b.c < b.o && b.c < prev.c;
+    }
+  }
+  return false;
+}
+// C: the trend read. The 4h structure (prior half-sessions + today's) decides; when it is mixed, the daily structure; else mixed.
+export type TrendRead = { trend: Trend3; h4: Trend3 | null; daily: Trend3 | null; vwap20: number | null; vwap_side: "above" | "below" | null; why: string };
+export function trendRead(c: any, todayBars: Bar[], spot: number, now = nowMs()): TrendRead | null {
+  if (!c || c.unavailable) return null;
+  const prior: HL[] = (Array.isArray(c.h4) ? c.h4 : []).map((x: any) => ({ h: num(x[0] ?? x.h), l: num(x[1] ?? x.l) }));
+  const dNow = etParts(new Date(now)).date;
+  const today = halfDays(completedBars(todayBars || [], 10, now).filter((x) => etParts(new Date(x.t)).date === dNow));   // today's session only
+  const h4 = structureOf([...prior, ...today], 3), daily = (c.hw?.d_struct as Trend3) || null;
+  const trend: Trend3 = h4 === "up" || h4 === "down" ? h4 : daily === "up" || daily === "down" ? daily : "mixed";
+  const vw = num(c.hw?.vwap20) || null, side = vw && spot > 0 ? (spot >= vw ? "above" : "below") : null;
+  return { trend, h4, daily, vwap20: vw, vwap_side: side, why: `4h ${h4 || "n/a"}, daily ${daily || "n/a"}${vw ? `, ${side} the 20-day VWAP ${vw}` : ""}` };
+}
+// C (hard, "T1"): a coach-level trade against the trend. Up trend: his level is a BOUNCE (long) level, never a short. Down trend: a short-the-rebalance
+// level, never a long. A day_bias that agrees with the trade overrides (the coach, Q4: the break of a key daily level is the confirmed direction).
+export function trendGateProblem(side: "call" | "put", tr: TrendRead | null | undefined, biasOk = false): string | null {
+  if (!tr || biasOk) return null;
+  if (side === "put" && tr.trend === "up") return `trend is UP (${tr.why}) — the coach's level is a bounce (long) level in an uptrend, never a short entry`;
+  if (side === "call" && tr.trend === "down") return `trend is DOWN (${tr.why}) — the coach's level is where to short the rebalance in a downtrend, never a long entry`;
+  return null;
+}
+// D: event day. macro = scheduled (from the routine), catalyst = mega-cap reporters gapping >= 5%, tape = the DEFENSIVE / RISK-ON open.
+export const ELECTION_NEXT = new Set(["2026-11-04", "2028-11-08"]);
+export const EVENT_RE = /CPI|consumer price|nonfarm|payroll|FOMC|fed (interest|rate)|interest rate decision/i;
+export type EventDay = { day: string; on: boolean; dir: "risk_off" | "risk_on" | null; why: string[] };
+export function eventDayRead(day: string, macro: string[], catalyst: { symbol: string; pct: number }[], qqq: { spot: number; prev: number } | undefined, tlt: { spot: number; prev: number } | undefined, afterOpen: boolean): EventDay {
+  const why: string[] = [...(macro || [])];
+  if (ELECTION_NEXT.has(day) && !why.some((w) => /election/i.test(w))) why.push("the day after the election");
+  const cats = (catalyst || []).filter((c) => Math.abs(num(c.pct)) >= 5);
+  for (const c of cats) why.push(`${c.symbol} ${c.pct > 0 ? "+" : ""}${c.pct}% after earnings`);
+  const qp = pctChange(qqq), tp = pctChange(tlt);
+  let dir: EventDay["dir"] = null;
+  if (afterOpen && qp != null && tp != null) {
+    if (qp <= -1 && tp >= 0.2) { dir = "risk_off"; why.push(`DEFENSIVE open: QQQ ${qp}% with TLT +${tp}%`); }
+    else if (qp >= 1 && tp <= -0.2) { dir = "risk_on"; why.push(`RISK-ON open: QQQ +${qp}% with TLT ${tp}%`); }
+  }
+  if (!dir && cats.length && cats.every((c) => Math.sign(c.pct) === Math.sign(cats[0].pct))) dir = cats[0].pct < 0 ? "risk_off" : "risk_on";
+  if (!dir && why.length && afterOpen && qp != null && Math.abs(qp) >= 0.5) dir = qp < 0 ? "risk_off" : "risk_on";
+  return { day, on: why.length > 0, dir: why.length ? dir : null, why };
+}
+export const withSentiment = (ev: EventDay | null | undefined, side: "call" | "put") => !!ev && ev.on && ((ev.dir === "risk_off" && side === "put") || (ev.dir === "risk_on" && side === "call"));
+// F: the winner exit. Bars that END after the entry (the entry bar counts for the extreme). R = entry − ORIGINAL wrong-if on the underlying.
+export function rebalanceExit(plan: { dir: "up" | "down"; wrong_if_level: number; wrong_if_orig?: number }, bars: Bar[], enteredAtMs: number, entryUnder: number, day: string, atr: number | null | undefined, now = nowMs()): string | null {
+  const R = Math.abs(entryUnder - (num(plan.wrong_if_orig) || num(plan.wrong_if_level)));
+  if (!(R > 0) || !(entryUnder > 0)) return null;
+  const sess = completedBars(bars || [], 10, now).filter((b) => b.t >= etToUtcMs(day, 570)).sort((a, b) => a.t - b.t);
+  const d = sess.filter((b) => b.t + 10 * 60e3 > enteredAtMs);
+  if (d.length < 2) return null;
+  const up = plan.dir === "up", last = d[d.length - 1], prev = d[d.length - 2];
+  const ext = up ? Math.max(...d.map((b) => b.h)) : Math.min(...d.map((b) => b.l));
+  const mfeR = (up ? ext - entryUnder : entryUnder - ext) / R;
+  if (mfeR >= 0.5) {
+    const vw = vwapOf(sess);
+    const wasWith = d.slice(0, -1).some((b) => up ? b.c > vw : b.c < vw);
+    if (wasWith && (up ? last.c < vw : last.c > vw)) return `rebalance: up ${round2(mfeR)}R, then a 10-minute close ${last.c} back ${up ? "below" : "above"} VWAP ${round2(vw)}`;
+    if (num(atr) > 0 && (up ? ext - last.c : last.c - ext) > num(atr)) return `rebalance: up ${round2(mfeR)}R, then a ${round2(Math.abs(last.c - ext))} bounce off the ${up ? "high" : "low"} ${round2(ext)} (> 1 ATR ${num(atr)})`;
+  }
+  if (mfeR >= 0.25 && (up ? last.c < prev.l : last.c > prev.h)) return `rebalance: up ${round2(mfeR)}R, then a 10-minute close ${last.c} back ${up ? "below the prior bar's low " + prev.l : "above the prior bar's high " + prev.h}`;
+  return null;
+}
+
 export type Armed = { day: string; ticker: string; side: "call" | "put"; source: string; thesis: string; trigger_level: number; wrong_if_level: number; target_level: number;
-  time_exit_min?: number; cites: any[]; rule_ids?: string[]; armed_at: string };
+  time_exit_min?: number; cites: any[]; rule_ids?: string[]; armed_at: string;
+  mode?: "level" | "rebalance" | "retrace"; expires_at?: string | null; bias_level?: number | null; level_trade?: boolean };   // v5.5: A rebalance / B retrace
 export function triggerState(a: { side: "call" | "put"; trigger_level: number; wrong_if_level: number }, bars: Bar[], now = nowMs()): "fire" | "drop" | "wait" {
   const done = completedBars(bars, 10, now).sort((x, y) => x.t - y.t);
   if (!done.length) return "wait";
@@ -1375,14 +1638,21 @@ export const needsTrigger = (d: { side: "call" | "put"; trigger_level?: number |
   num(d.trigger_level) > 0 && (d.side === "call" ? spot <= num(d.trigger_level) : spot >= num(d.trigger_level));
 async function getArmed(day: string): Promise<Armed[]> { try { const a = await getSetting("armed_ideas"); return (Array.isArray(a) ? a : []).filter((x: any) => x && x.day === day); } catch { return []; } }
 async function putArmed(list: Armed[]) { try { await putSetting("armed_ideas", list); } catch { /* best effort */ } }
-async function armIdea(ctx: Ctx, d: Decision, coach: boolean) {
+export function armedWaitText(a: { mode?: string; side: string; trigger_level: number; ticker: string; bias_level?: number | null }) {
+  if (a.mode === "rebalance") return `waiting for the first rebalance on ${a.ticker}: a bounce, then a 10-minute close back ${a.side === "put" ? "down" : "up"} (day bias ${a.side === "put" ? "short below" : "long above"} ${a.bias_level ?? a.trigger_level})`;
+  if (a.mode === "retrace") return `waiting for ${a.ticker} to ${a.side === "call" ? "retrace" : "rebalance"} to intraday VWAP (now ${a.trigger_level}) and close back ${a.side === "call" ? "up" : "down"} — 90 minutes`;
+  return `waiting for a 10-minute close ${a.side === "call" ? "above" : "below"} ${a.trigger_level} on ${a.ticker}`;
+}
+async function armIdea(ctx: Ctx, d: Decision, coach: boolean, x: { mode?: "level" | "rebalance" | "retrace"; expires_at?: string | null; bias_level?: number | null; level_trade?: boolean } = {}) {
   const list = await getArmed(ctx.day);
-  if (list.some((a) => a.ticker === d.ticker && a.side === d.side)) { await recordIdea(ctx.day, d, "passed", `Armed already: waiting for a 10-minute close ${d.side === "call" ? "above" : "below"} ${d.trigger_level} on ${d.ticker}`); return; }
-  list.push({ day: ctx.day, ticker: d.ticker, side: d.side, source: coach ? d.source : "own", thesis: String(d.thesis || "").slice(0, 1500), trigger_level: num(d.trigger_level),
-    wrong_if_level: d.wrong_if_level, target_level: d.target_level, time_exit_min: d.time_exit_min, cites: d.cites || [], rule_ids: d.rule_ids || [], armed_at: new Date(nowMs()).toISOString() });
+  const a: Armed = { day: ctx.day, ticker: d.ticker, side: d.side, source: coach ? d.source : "own", thesis: String(d.thesis || "").slice(0, 1500), trigger_level: num(d.trigger_level),
+    wrong_if_level: d.wrong_if_level, target_level: d.target_level, time_exit_min: d.time_exit_min, cites: d.cites || [], rule_ids: d.rule_ids || [], armed_at: new Date(nowMs()).toISOString(),
+    mode: x.mode || "level", expires_at: x.expires_at ?? null, bias_level: x.bias_level ?? null, level_trade: x.level_trade !== false };
+  if (list.some((y) => y.ticker === d.ticker && y.side === d.side)) { await recordIdea(ctx.day, d, "passed", `Armed already: ${armedWaitText(list.find((y) => y.ticker === d.ticker && y.side === d.side)!)}`); return; }
+  list.push(a);
   await putArmed(list);
-  await recordIdea(ctx.day, d, "passed", `Armed: waiting for a 10-minute close ${d.side === "call" ? "above" : "below"} ${d.trigger_level} on ${d.ticker} (wrong-if ${d.wrong_if_level}, target ${d.target_level})`);
-  await wlog("armed", { ticker: d.ticker, side: d.side, trigger: d.trigger_level, source: d.source });
+  await recordIdea(ctx.day, d, "passed", `Armed: ${armedWaitText(a)} (wrong-if ${d.wrong_if_level}, target ${d.target_level})`);
+  await wlog("armed", { ticker: d.ticker, side: d.side, trigger: d.trigger_level, source: d.source, mode: a.mode });
 }
 // Runs every tick before the AI: fire, drop or keep each armed idea. Never throws.
 export async function checkArmed(ctx: Ctx, blackoutFn: () => Promise<string | null>): Promise<{ fired: string[]; dropped: string[]; waiting: number }> {
@@ -1393,19 +1663,38 @@ export async function checkArmed(ctx: Ctx, blackoutFn: () => Promise<string | nu
   const keep: Armed[] = [];
   let bars: Record<string, Bar[]> = {}, quotes: Record<string, { spot: number; prev: number }> = {};
   try { bars = await bars10(list.map((a) => a.ticker), ctx.day); } catch { /* no bars = keep waiting */ }
-  try { quotes = await equityQuotes(list.map((a) => a.ticker)); } catch { /* no quote = keep waiting */ }
+  try { quotes = await equityQuotes([...list.map((a) => a.ticker), "QQQ", "TLT"]); } catch { /* no quote = keep waiting */ }
+  try { ctx.event = await updateEvent(ctx.day, ctx.min, quotes); } catch { /* v5.5 D: keep the last read */ }
   let blackout: string | null | undefined;                                        // read only when something actually fires (one TradingView call, not one per tick)
+  let dc: Record<string, any> = ctx.dctx || {};                                    // v5.5: ATR + trend inputs from the day's cached context (no fetch here)
+  if (!ctx.dctx) { try { const cch = await getSetting("daily_ctx"); if (cch?.day === ctx.day && cch.by) dc = cch.by; } catch { /* none */ } }
   for (const a of list) {
     const d: Decision = { ticker: a.ticker, side: a.side, source: a.source, thesis: a.thesis, wrong_if_level: a.wrong_if_level, target_level: a.target_level, time_exit_min: a.time_exit_min, cites: a.cites, rule_ids: a.rule_ids, trigger_level: a.trigger_level };
     if (ctx.min > num(ctx.cfg.last_entry_min)) { await recordIdea(ctx.day, d, "passed", "Armed idea dropped: past the last-entry time, never triggered"); out.dropped.push(a.ticker); continue; }
     if (ctx.lim.locked) { await recordIdea(ctx.day, d, "blocked", "Armed idea dropped: " + ctx.lim.locked.why); out.dropped.push(a.ticker); continue; }
     const tb = bars[a.ticker];
-    const st = tb ? triggerState(a, tb) : "wait";
-    if (st === "drop") { await recordIdea(ctx.day, d, "passed", `Armed idea dropped: wrong-if ${a.wrong_if_level} hit before the trigger ${a.trigger_level}`); out.dropped.push(a.ticker); continue; }
+    const mode = a.mode || "level", dir = a.side === "call" ? "up" : "down";
+    if (mode === "retrace" && a.expires_at && nowMs() >= Date.parse(a.expires_at)) {   // v5.5 B: 90 minutes and it never came back
+      const why = "Armed retrace expired after 90 minutes: price never came back to VWAP and resumed";
+      await recordIdea(ctx.day, d, "passed", why); await bookShadow(ctx.day, d, quotes[a.ticker]?.spot || (tb ? tb[tb.length - 1].c : 0), "B90", why); out.dropped.push(a.ticker); continue;
+    }
+    if (mode === "rebalance" && !biasAgrees(ctx.bias?.[a.ticker], a.side)) {        // v5.5 A: the level was reclaimed
+      const b = ctx.bias?.[a.ticker];
+      await recordIdea(ctx.day, d, "passed", `Armed rebalance dropped: the day bias ended${b?.cleared_close ? ` (a 10-minute close ${b.cleared_close} back through ${b.level})` : ""}`); out.dropped.push(a.ticker); continue;
+    }
+    let st = tb ? triggerState(a, tb) : "wait";
+    if (mode !== "level" && st !== "drop") {
+      const atr = num(dc[a.ticker]?.atr14);
+      const fire = tb ? (mode === "rebalance" ? rebalanceFire(dir, tb, ctx.day, Date.parse(a.armed_at), atr > 0 ? 0.3 * atr : 0) : retraceFire(dir, tb, ctx.day, Date.parse(a.armed_at))) : false;
+      st = fire ? "fire" : "wait";
+    }
+    if (st === "drop") { await recordIdea(ctx.day, d, "passed", `Armed idea dropped: wrong-if ${a.wrong_if_level} hit before the ${mode === "level" ? "trigger " + a.trigger_level : mode}`); out.dropped.push(a.ticker); continue; }
     if (st === "wait") { keep.push(a); out.waiting++; continue; }
     const spot = quotes[a.ticker]?.spot || tb![tb!.length - 1].c;
     if (blackout === undefined) { try { blackout = await blackoutFn(); } catch { blackout = null; } }
-    const r = await tryOpen(ctx, { ...d, thesis: `[armed ${a.armed_at.slice(11, 16)}Z, triggered by a 10-minute close ${a.side === "call" ? "above" : "below"} ${a.trigger_level}] ` + a.thesis }, spot, a.source.startsWith("coach:"), blackout);
+    ctx.trends = { ...(ctx.trends || {}), [a.ticker]: ctx.trends?.[a.ticker] ?? trendRead(dc[a.ticker], tb || [], spot) };
+    const how = mode === "rebalance" ? `the first rebalance with the day bias (${a.bias_level ?? ""})` : mode === "retrace" ? "the retrace to intraday VWAP that resumed" : `a 10-minute close ${a.side === "call" ? "above" : "below"} ${a.trigger_level}`;
+    const r = await tryOpen(ctx, { ...d, trigger_level: mode === "level" ? d.trigger_level : null, thesis: `[armed ${a.armed_at.slice(11, 16)}Z, triggered by ${how}] ` + a.thesis }, spot, a.source.startsWith("coach:"), blackout, { levelTrade: a.level_trade !== false });
     out.fired.push(a.ticker + (r.opened ? "" : " (not filled: " + r.why + ")"));
   }
   await putArmed(keep);
@@ -1479,6 +1768,7 @@ export async function tick(opts: { force?: boolean } = {}): Promise<any> {
     ctx.posts = posts;
     // v4.3: ARMED ideas are checked on every tick, before anything else that could spend an AI call (needs today's posts for W21/result checks).
     let armed = { fired: [] as string[], dropped: [] as string[], waiting: 0 };
+    try { ctx.bias = await loadBias(day); ctx.event = (await loadEvent(day)) || null; } catch { /* v5.5: none known */ }
     try {
       ctx.reported = await reportedToday(day);
       armed = await checkArmed(ctx, async () => ruleOn(rules, "W14") ? await econBlackout(day, c.min, num(ruleParams(rules, "W14").window_min) || 15) : null);
@@ -1525,6 +1815,16 @@ export async function tick(opts: { force?: boolean } = {}): Promise<any> {
     ctx.tape = tapeRead(quotes.QQQ, quotes.TLT, ruleParams(rules, "W24"));                             // v3.44 W24
     ctx.reported = ctx.reported || await reportedToday(day);                                          // v3.44 W25 (v4.3: already read for the armed check)
     ctx.vwaps = Object.fromEntries(snapshot.map((x) => [x.ticker, num(x.day?.vwap)]).filter(([, v]) => num(v) > 0));   // v3.36 fact check
+    // v5.5 C trend, A day bias, D event day (no AI; bars and quotes already read this tick)
+    ctx.trends = Object.fromEntries(focus.map((s) => [s, trendRead(dctx[s], bars[s] || [], quotes[s].spot, nowT)]));
+    try { ctx.bias = await updateBias(day, c.min, focus, quotes, bars, posts, dctx, nowT); } catch (e) { await wlog("bias_error", { msg: String((e as Error).message).slice(0, 160) }); }
+    try { ctx.event = await updateEvent(day, c.min, quotes); } catch (e) { await wlog("event_error", { msg: String((e as Error).message).slice(0, 160) }); }
+    for (const row of snapshot as any[]) {
+      const tr = ctx.trends[row.ticker], b = ctx.bias?.[row.ticker];
+      row.trend = tr ? `${tr.trend} (${tr.why})` : "unavailable";
+      row.homework = hwLine(dctx[row.ticker], row.price);
+      if (b) row.day_bias = b.cleared_ms ? `ended: ${b.dir} below/above ${b.level} was reclaimed (close ${b.cleared_close})` : `${b.dir.toUpperCase()} ${b.dir === "short" ? "below" : "above"} ${b.level} (${b.name}) until a 10-minute close reclaims it`;
+    }
     const dayRow = ((await db(`winston_days?day=eq.${day}&select=routine,sentiment`)) || [])[0] || {};
     const todays = (await db(`winston_ideas?day=eq.${day}&select=ticker,side,status,reason,source&order=id.asc&limit=60`)) || [];
     const brain = expireBrainForEarnings(await brainExcerpt(), ctx.reported || []);                   // v4.3: callouts on last night's reporters are marked EXPIRED
@@ -1545,7 +1845,14 @@ SPY READ (W23): ${ctx.index ? `last ${ctx.index.last} vs VWAP ${ctx.index.vwap} 
 READ THE COACH'S POST KINDS: a "result" post (sold, trimmed, took profit, stopped) is his EXIT on that name, not a fresh entry — a tail like "and play the bounce" after a sale is not a new buy unless he gives a new level. A "level" post names where he SELLS TO or buys from; do not enter a call within $0.50 of a level he sells into (W21). Let price come to you (W20): no re-entry on a name above where the last trade got out. Don't chase a move that's done (W26): a name already down big today is not a fresh put.
 SPREAD (v5.3): the bid/ask spread is your biggest cost — $1,168 paid in spread against $482 net profit through 2 Nov. Liquid names only: the contract picker takes nothing wider than 8% of mid, nothing wider than 1% of the book in dollars, and nothing under $1.00 (no lottery tickets). TIME LEFT: no new entry with less time to the 3:50 flat than the ${num(cfg.min_time_exit_min) || 0}-minute minimum hold. Each snapshot row carries "context": the 20-day range, 5-day trend, yesterday's high/low/close and the pre-market range — the chart the coach reads.
 COACH'S RULES OF 29 OCT (brain PB-1029-01…09, now with the numbers to use): VWAP RECLAIM (02) — price lost VWAP and closed back above it; allow a variance of ${VWAP_VARIANCE_PCT}% of price around VWAP (the coach: a % of price, flexed by order blocks and sentiment; this is the starting default) and enter AFTER the reclaim, as a trigger. VWAP FLATTENS after earnings (01/06) — trade the retrace to VWAP that holds, not the opening pop. PRE-MARKET HIGH/LOW (03) — a 10-minute close through the pre-market high can open a NEW long, through the pre-market low a NEW short (the coach confirmed a new trade is fine; W3 still means no adding). RANGE BREAK (04) — a close through LAST FULL WEEK's low can take puts, through its high can take calls; the PRIOR MONTH's range is the same signal and stronger. Each snapshot row's "context" now carries both ranges when the broker returned them.
-COACH POSTS ARE LEVELS (v5.3): a coach idea (source coach:N) is only filled on a 10-minute CLOSE through a level YOU name in trigger_level — read the post, decide what it is, pick the level (his entry, his "above/below X", a reclaim, a break). A post with no usable number is context, not a trade: pass it with that reason. A level the price has already run more than ${num(cfg.coach_chase_pct) || 0.5}% past is a chase — pass it. Every NEW coach post gets a decision or a pass, no exceptions.
+COACH POSTS ARE LEVELS (v5.3): a coach idea (source coach:N) is only filled on a 10-minute CLOSE through a level YOU name in trigger_level — read the post, decide what it is, pick the level (his entry, his "above/below X", a reclaim, a break). A LEVEL post with no usable number is context, not a trade: pass it with that reason. A level the price has already run more than ${num(cfg.coach_chase_pct) || 0.5}% past is a chase — pass it (except WITH a DAY BIAS, below). Every NEW coach post gets a decision or a pass, no exceptions.
+v5.5 — THE COACH, 5 NOV (programmed; the code enforces these):
+TREND FIRST (C): each snapshot row carries "trend" (4-hour structure, the daily when the 4h is mixed). In an up-trend a coach level below price is a BOUNCE level — long, never a short entry. In a down-trend a level above price is where to short the rebalance — never a long; a level below price is where it is heading (a target), not an entry. A coach-level trade against the trend is refused (T1), and no entry within $0.50 of a coach level that is the trade's target (W21, now hard).
+BARE CALLS (B): a coach CALL with a side and no number ("AMD CALLS LONG") is NOT passed for lack of a number: decide it (side, wrong-if, target) and leave trigger_level empty — the code arms it as a RETRACE: uptrend = wait for the pullback to intraday VWAP that reclaims; downtrend = wait for the rebalance up to VWAP that fails. Never enter at the current price. It expires after 90 minutes. "Market makers don't chase."
+DAY BIAS (A): a pre-market key level (his level posted before 9:45, or a homework level) that the first 10-minute bar CLOSED through is the day's direction until a 10-minute close reclaims it (rows carry "day_bias"). With the bias the chase lines do not apply; the entry is the first REBALANCE (the bounce, then a 10-minute close back with the bias) — leave trigger_level empty and set wrong_if_level at the bias level. Buying at the open still works; the bounce is the better price.
+HOMEWORK (E): rows carry "homework" — the 5-day range, unfilled daily gaps, 50% / 61.8% of the last 60-day swing, distance from the 20-day VWAP in $ and ATR. Know the key daily levels before you trade a name. Far from the 20-day VWAP = a rebalance toward it is due.
+EVENT DAY (D): ${ctx.event?.on ? `TODAY IS AN EVENT DAY — ${ctx.event.why.join("; ")}${ctx.event.dir ? `; sentiment ${ctx.event.dir.replace("_", "-")}: the W26 chase lines relax to 8% single / 2.5% index for ${ctx.event.dir === "risk_off" ? "PUTS" : "CALLS"} only; nothing changes against the sentiment` : "; no sentiment direction yet, nothing relaxes"}. It is not whether it moves, it is how much.` : "not an event day."}
+WINNERS (F): the code exits a winner that starts to rebalance against you (out on a close back through VWAP or the prior bar), so plan the target at the next level, not the far one.
 TRIGGERS (v4.3): if your entry needs a 10-minute CLOSE through a level first (the coach's "above X" / "below X", a reclaim, a break), put it in trigger_level and the code waits for the close — never enter ahead of a trigger you name. ${armed.waiting ? `${armed.waiting} armed idea(s) are already waiting for their trigger. ` : ""}${armed.fired.length ? `Armed and fired this tick: ${armed.fired.join(", ")}. ` : ""}${armed.dropped.length ? `Armed and dropped this tick: ${armed.dropped.join(", ")}. ` : ""}${(ctx.reported || []).length ? `EXPIRED: callouts on ${ctx.reported!.join(", ")} were written before their earnings — re-read those names fresh from today's bars and context only.` : ""}
 Decide now. Act on NEW coach posts (take or pass, with a reason) and on any idea of your own that the chart and brain support.`;
     let out: any, usage = { input: 0, output: 0 };
@@ -1576,8 +1883,24 @@ Decide now. Act on NEW coach posts (take or pass, with a reason) and on any idea
       // v5.3 COACH POSTS ARE LEVELS, NOT TRIGGERS (Ifoma, 3 Nov): Winston still reads every post and decides what it is, but a coach idea only fills on a
       // 10-minute CLOSE through a level he names. No level = not tradeable (2 Nov ABT on "healthcare looks great", −$45). A level already more than
       // coach_chase_pct behind the price is a chase, not an entry (2 Nov CCL at +5.5%). Both book a shadow so the ledger scores the rule.
+      const bz = ctx.bias?.[d.ticker], bOk = biasAgrees(bz, d.side);                 // v5.5 A
       if (coach) {
+        const post = postById.get(d.source.slice(6));
+        const bare = post?.kind === "call" && !(num(post?.level) > 0) && !(num(post?.entry) > 0);   // v5.5 B: a side and no number
+        const tg = bare ? null : trendGateProblem(d.side, ctx.trends?.[d.ticker], bOk);             // v5.5 C: trend first (hard)
+        if (tg) { await recordIdea(day, d, "blocked", "T1: " + tg); await bookShadow(day, d, spot, "T1", tg); results.push({ t: d.ticker, ok: false, why: "T1" }); continue; }
+        if (bOk) {                                                                     // v5.5 A: with the day bias: no chase line, wait for the first rebalance
+          const bad = planProblem(d, spot);
+          if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); results.push({ t: d.ticker, ok: false, why: bad }); continue; }
+          await armIdea(ctx, { ...d, trigger_level: bz!.level }, coach, { mode: "rebalance", bias_level: bz!.level, level_trade: !bare }); results.push({ t: d.ticker, ok: false, why: "armed rebalance" }); continue;
+        }
         const cp = coachLevelProblem(d, spot, num(cfg.coach_chase_pct));
+        if (cp && cp.rule === "C1" && bare && num(ctx.vwaps?.[d.ticker]) > 0) {     // v5.5 B: armed as a retrace to intraday VWAP, 90 minutes
+          const bad = planProblem(d, spot);
+          if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); results.push({ t: d.ticker, ok: false, why: bad }); continue; }
+          await armIdea(ctx, { ...d, trigger_level: round2(num(ctx.vwaps![d.ticker])) }, coach, { mode: "retrace", expires_at: new Date(nowMs() + 90 * 60e3).toISOString(), level_trade: false });
+          results.push({ t: d.ticker, ok: false, why: "armed retrace" }); continue;
+        }
         if (cp) { await recordIdea(day, d, "passed", cp.why); await bookShadow(day, d, spot, cp.rule, cp.why); results.push({ t: d.ticker, ok: false, why: cp.why }); continue; }
         const st = triggerState({ side: d.side, trigger_level: num(d.trigger_level), wrong_if_level: d.wrong_if_level }, bars[d.ticker] || []);
         if (st !== "fire") {
@@ -1585,6 +1908,11 @@ Decide now. Act on NEW coach posts (take or pass, with a reason) and on any idea
           if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); results.push({ t: d.ticker, ok: false, why: bad }); continue; }
           await armIdea(ctx, d, coach); results.push({ t: d.ticker, ok: false, why: "armed" }); continue;
         }
+      }
+      if (!coach && bOk && !(num(d.trigger_level) > 0)) {                            // v5.5 A: an own idea with the day bias waits for the first rebalance too
+        const bad = planProblem(d, spot);
+        if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); results.push({ t: d.ticker, ok: false, why: bad }); continue; }
+        await armIdea(ctx, { ...d, trigger_level: bz!.level }, false, { mode: "rebalance", bias_level: bz!.level, level_trade: false }); results.push({ t: d.ticker, ok: false, why: "armed rebalance" }); continue;
       }
       // v4.3 ARMED: a named trigger that has not been closed through yet means wait, not fill.
       if (needsTrigger(d, spot) && triggerState({ side: d.side, trigger_level: num(d.trigger_level), wrong_if_level: d.wrong_if_level }, bars[d.ticker] || []) !== "fire") {
@@ -1690,6 +2018,17 @@ export async function routine(opts: { force?: boolean } = {}) {
   for (const s of [...new Set(["SPY", ...cfg.universe])].filter((x) => TVSYM[x]).slice(0, 4)) {
     try { const n = await md("tv", "mcp-tv-get-news", { symbol: TVSYM[s], limit: 4 }); data.news[s] = (n?.result || n?.headlines || n?.data || []).slice(0, 4).map((h: any) => cleanUntrusted(h.title, 140).text).filter(Boolean); } catch { /* unavailable */ }   // v4.4: headlines are DATA
   }
+  // v5.5 E: the daily homework for every universe name (warms the day's context cache); D: the scheduled + catalyst half of the event-day read.
+  let reported: string[] = []; try { reported = await reportedToday(c.date); } catch { /* unavailable */ }
+  try { const dctx = await dailyContext(cfg.universe, c.date, reported, { save: false }); data.homework = Object.fromEntries(cfg.universe.filter((s: string) => dctx[s]).map((s: string) => [s, hwLine(dctx[s], num(data.quotes?.[s]?.price))])); } catch { data.homework = null; }
+  try {
+    const macro = (data.calendar || []).filter((e: any) => EVENT_RE.test(String(e.title || ""))).map((e: any) => `${e.title} at ${e.at} ET`);
+    let catalyst: { symbol: string; pct: number }[] = [];
+    if (reported.length) { const rq = await equityQuotes(reported.slice(0, 20)); catalyst = reported.filter((s) => rq[s]?.prev > 0).map((s) => ({ symbol: s, pct: round2((rq[s].spot - rq[s].prev) / rq[s].prev * 100) })).filter((x) => Math.abs(x.pct) >= 5); }
+    const read = eventDayRead(c.date, macro, catalyst, undefined, undefined, false);
+    await putSetting("event_day", { day: c.date, macro, catalyst, read, at: new Date(nowMs()).toISOString() });
+    data.event_day = read;
+  } catch { /* unavailable */ }
   const brain = await brainExcerpt();
   const { out, usage } = await aiJson(SYSTEM, `Morning routine for ${c.date}. Use ONLY this data; if something is missing, say it is unavailable.\nDATA: ${JSON.stringify(data).slice(0, 14000)}\nBRAIN (coach calls): ${brain || "unavailable"}\nWrite the day's plan: bias, scheduled events (ET), up to 6 names to watch with why, and risks.`, ROUTINE_TOOL, 1800);
   await db("winston_days?on_conflict=day", { method: "POST", headers: { prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ day: c.date, start_balance: cfg.paper_balance, routine: { ...out, data_missing: Object.entries(data).filter(([, v]) => v == null).map(([k]) => k) }, updated_at: new Date(nowMs()).toISOString() }) });
@@ -1790,7 +2129,8 @@ export async function stateForApp() {
   return { ok: true, clock: { day, status: c.status, min: c.min }, config: cfg, limits: { ...L, cap_usd: isFinite(lim.capUsd) ? lim.capUsd : null, max_loss_usd: isFinite(lim.maxLossUsd) ? lim.maxLossUsd : null, locked: lim.locked },
     equity: eq.equity, cash: eq.cash, day_pnl: eq.day_pnl, week_pnl: eq.week_pnl, open: (trades || []).filter((t: any) => t.status === "open"), trades: trades || [], ideas: ideas || [],
     heartbeat: hb || null, days: days || [], today: (days || []).find((d: any) => d.day === day) || null, stats: computeStats(all), rules, curve,
-    shadow: await shadowState().catch(() => null) };   // v4.5: the rule-cost ledger (never part of stats / equity / the gate)
+    shadow: await shadowState().catch(() => null),   // v4.5: the rule-cost ledger (never part of stats / equity / the gate)
+    v55: { day_bias: await loadBias(day).catch(() => ({})), event_day: await loadEvent(day).catch(() => null) } };   // v5.5: the two chips on the Winston tab
 }
 export async function setRule(body: any) {
   const id = String(body?.id || "");
@@ -1886,14 +2226,16 @@ export async function setEnabled(body: any) {
    coach ideas only in week 1); kill link for Ifoma AND Josh; mode changes are a console paste, never a button. live_mode = off | dry | on.
    OFF  : nothing below runs.   DRY : every entry/exit is also REVIEWED with Robinhood (review_option_order), nothing is ever placed.
    ON   : the same plus real place_option_order, after the server-side caps. Paper fills stay the source of P&L in every mode. */
-export const LIVE_DEFAULTS: any = { contracts: 1, max_premium: 250, day_kill: -300, week_kill: -750, max_open: 2, last_entry_min: 900, coach_only: true, min_bp: 4500 };
+// v5.5 (Ifoma, 5 Nov: "flip it as proposed"): week 1 is own ideas + coach LEVEL ideas under the v5.5 rules (coach-sourced −$764 on 34 trades, own +$1,246 on 16).
+// coach_only stays a switch: `config_set {live_limits:{coach_only:true}}` puts the old rule back.
+export const LIVE_DEFAULTS: any = { contracts: 1, max_premium: 250, day_kill: -300, week_kill: -750, max_open: 2, last_entry_min: 900, coach_only: false, min_bp: 4500 };
 export const LIVE_WORKING = new Set(["queued", "confirmed", "unconfirmed", "partially_filled", "new", "pending_cancelled"]);   // the same "still open" states otto-proxy uses
 export const liveModeOf = (cfg: any): "off" | "dry" | "on" => (cfg?.live_mode === "dry" || cfg?.live_mode === "on" ? cfg.live_mode : "off");
 export function liveLimitsOf(raw: any) {
   const o = { ...LIVE_DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
   return { contracts: Math.max(1, Math.floor(num(o.contracts)) || 1), max_premium: num(o.max_premium) > 0 ? num(o.max_premium) : 250,
     day_kill: -Math.abs(num(o.day_kill) || 300), week_kill: -Math.abs(num(o.week_kill) || 750), max_open: Math.max(1, Math.floor(num(o.max_open)) || 2),
-    last_entry_min: num(o.last_entry_min) > 0 ? num(o.last_entry_min) : 900, coach_only: o.coach_only !== false, min_bp: num(o.min_bp) > 0 ? num(o.min_bp) : 4500 };
+    last_entry_min: num(o.last_entry_min) > 0 ? num(o.last_entry_min) : 900, coach_only: o.coach_only === true, min_bp: num(o.min_bp) > 0 ? num(o.min_bp) : 4500 };
 }
 export type LiveSnap = { qty: number; premium: number; source: string; min: number; openLive: number; dayPnl: number; weekPnl: number; killed: boolean; blocked: string | null; mismatchToday: boolean };
 // The caps, in one pure function. Called BEFORE any place_*; a non-null answer means the ticket is not sent.

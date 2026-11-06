@@ -87,12 +87,13 @@ Deno.test("v4.9 caps: each approved cap refuses on its own, and a clean coach ti
   assert(X.liveCapRefusal(L, snap({ openLive: 1 })) === null, "1 open leaves room");
   assert(/no live entry/.test(X.liveCapRefusal(L, snap({ min: 900 }))), "3:00 PM is the last entry minute");
   assert(X.liveCapRefusal(L, snap({ min: 899 })) === null, "2:59 PM ok");
-  assert(/coach ideas only/.test(X.liveCapRefusal(L, snap({ source: "own" }))), "week 1: own ideas stay paper");
+  assert(X.liveCapRefusal(L, snap({ source: "own" })) === null, "v5.5 (Ifoma, 5 Nov: flip it): week 1 takes own ideas too");
+  assert(/coach ideas only/.test(X.liveCapRefusal(X.liveLimitsOf({ coach_only: true }), snap({ source: "own" }))), "coach_only switched back on: own ideas stay paper");
   assert(X.liveCapRefusal({ ...L, coach_only: false }, snap({ source: "own" })) === null, "coach_only off lets own ideas through");
   assert(/kill/.test(X.liveCapRefusal(L, snap({ killed: true }))), "killed");
   assert(/blocked/.test(X.liveCapRefusal(L, snap({ blocked: "Trade-approval setting is OFF: Robinhood says ON" }))), "blocked by preflight");
   assert(/reconcile/.test(X.liveCapRefusal(L, snap({ mismatchToday: true }))), "mismatch day");
-  assert(L.contracts === 1 && L.max_premium === 250 && L.day_kill === -300 && L.week_kill === -750 && L.max_open === 2 && L.last_entry_min === 900 && L.coach_only === true, "defaults are the approved caps");
+  assert(L.contracts === 1 && L.max_premium === 250 && L.day_kill === -300 && L.week_kill === -750 && L.max_open === 2 && L.last_entry_min === 900 && L.coach_only === false, "defaults are the approved caps (v5.5: week 1 takes own ideas too)");
 });
 
 Deno.test("v4.9 reconcile: each mismatch kind is caught; clean books are clean (dry and on)", () => {
@@ -213,11 +214,12 @@ Deno.test("v4.9 ON: a ticket over the premium cap, in a kill, blocked, or on a m
     ["kill", { ask: 2.4 }, {}, { kill: true }],
     ["blocked", { ask: 2.4 }, { blocked: "Trade-approval setting is OFF: Robinhood says ON" }, {}],
     ["mismatch", { ask: 2.4 }, { mismatch_day: "2026-11-04" }, {}],
-    ["own idea", { ask: 2.4 }, {}, { source: "own" }],
+    ["own idea (coach_only switched back on)", { ask: 2.4 }, {}, { source: "own", coachOnly: true }],
   ];
   for (const [name, ef, state, o] of cases) {
     seed({ live_mode: "on" });
     if (Object.keys(state).length) await fakeDb("winston_settings?on_conflict=key", { method: "POST", body: JSON.stringify({ key: "live_state", value: state }) });
+    if (o.coachOnly) await fakeDb("winston_settings?on_conflict=key", { method: "POST", body: JSON.stringify({ key: "live_limits", value: { coach_only: true } }) });
     if (o.kill) await fakeDb("winston_settings?on_conflict=key", { method: "POST", body: JSON.stringify({ key: "kill_now", value: { at: "x", by: "ifoma" } }) });
     const t = await openTrade();
     await X.liveAfterOpen(mkCtx({ live_mode: "on" }), t.id, { ...D, source: o.source || "coach:571" }, ROW, { ask: ef.ask, fill: ef.ask }, { stop_option: 1.9 }, 524);

@@ -400,6 +400,7 @@ body.dk-on::before,body.splash-off::before{display:none!important}
 .win-dot{display:inline-block;width:11px;height:11px;border-radius:50%;background:var(--up);margin-right:8px;animation:winp 1.4s infinite}@keyframes winp{50%{opacity:.25}}
 .win-score{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:12px 0}.win-sc{background:var(--s1);border:1px solid var(--rule);border-radius:12px;padding:12px;text-align:center}.win-sc .n{font-size:28px;font-weight:700}
 .win-li{display:flex;align-items:center;gap:12px;padding:11px 2px;border-bottom:1px solid var(--rule)}.win-li:last-child{border:0}.win-t{flex:1}
+.v55row{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}.v55c{font:700 11.5px var(--mono);padding:3px 9px;border-radius:999px;border:1px solid var(--rule);color:var(--ink-2)}.v55c.s{color:var(--down,#ff5a2e);border-color:#5a2a1a}.v55c.l{color:var(--up);border-color:#1f4a24}.v55c.x{opacity:.55;text-decoration:line-through}.v55c.e{color:#ffc27a;border-color:#5a4a1a}
 .win-chip{font-weight:700;font-size:12px;border-radius:7px;padding:4px 9px;min-width:58px;text-align:center;background:var(--surface-3,#222)}.win-chip.w{background:#0d2a10;color:var(--up)}.win-chip.l{background:#2e150c;color:var(--down,#ff5a2e)}.win-chip.o{background:#2a230c;color:#ffc27a}
 /* v3.38 (approved mockup v338-mockup.html): mode badge, stamps, MFE/MAE, gate + exit bars; the Pop Quiz tab */
 .win-mode{font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--rule);color:var(--ink-2)}.win-mode.data{color:#ffb547;border-color:#7a5212;background:#2a1f08}
@@ -2749,7 +2750,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.4.0";
+const BUILD="5.5.0";
 const ROUTINE=[
  {n:1,title:"The bond market",src:"The 10-year live, plus the official close",calls:[{k:"t10"}]},
  {n:2,title:"One currency pair",src:"USD / JPY, spot",calls:[{k:"jpy"}]},
@@ -4463,7 +4464,7 @@ async function winApi(fn,body){
 const winM=n=>n==null||!isFinite(n)?"—":`<span class="${n>0?"up":n<0?"dn":"mut"}">${n<0?"−":n>0?"+":""}$${Math.abs(+n).toFixed(2)}</span>`;
 const winR=n=>n==null||!isFinite(n)?"—":`${n>=0?"+":"−"}${Math.abs(+n).toFixed(2)}R`;
 const winET=t=>{try{return new Date(t).toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:"America/New_York"})}catch(e){return ""}};
-const WIN_WHY={wrong_if:"wrong-if: 10-minute close through the level",target:"target touched",time:"time exit",flat_close:"flat by 3:50 PM",kill:"closed by the kill switch",coach_exit:"coach exit: indecision then no new high",trail:"trailing stop (moved after the move went his way)",breakeven:"breakeven stop (moved to entry after +0.5R)"};   // v4.3: the two moved stops
+const WIN_WHY={wrong_if:"wrong-if: 10-minute close through the level",target:"target touched",time:"time exit",flat_close:"flat by 3:50 PM",kill:"closed by the kill switch",coach_exit:"coach exit: indecision then no new high",trail:"trailing stop (moved after the move went his way)",breakeven:"breakeven stop (moved to entry after +0.5R)",rebalance:"rebalance exit: the winner turned back (VWAP / prior bar)"};   // v4.3: the two moved stops
 /* v3.38: stamps = gates that would have BLOCKED the trade in strict mode (plan.stamps "W20: why" / "fact: why" / "picker:volume_not_above_oi"; flags "stamp:W20"). */
 const WIN_STAMP_LABEL={W3:"W3 already in this ticker",W12:"W12 spread too wide",W13:"W13 quote too old",W14:"W14 event blackout",W15:"W15 one per ticker per day",W20:"W20 re-entry past last exit",W21:"W21 at the coach's sell-to",W22:"W22 coach exit",W23:"W23 index disagrees",W24:"W24 defensive tape (call)",W25:"W25 first 15 / after earnings",W26:"W26 move already done"};
 function winStampKey(s){s=String(s||"");const id=s.split(":")[0].trim(),why=s.slice(s.indexOf(":")+1).trim();
@@ -4713,13 +4714,19 @@ function winToday(j){
   return `${winHead(j)}${winStrip(j)}${winLive(WIN.lc)}
     <div class="win43-main">
       <div class="dk-cardx win43-feed"><div class="dk-h">Winston now <b>he thinks only when something changed${td.ai?" · "+esc(td.ai.calls||0)+" looks today":""}</b><span class="x" data-wpop="report">all ${ideasDay.length||ideasAll.length} notes ↗</span></div>
-        ${winHeart(j)}${banner}
+        ${winHeart(j)}${winV55(j)}${banner}
         <div class="mut" style="font-size:10.5px;letter-spacing:.08em;text-transform:uppercase;margin:2px 0">${ideasLabel}</div>
         ${ideas.length?ideas.map(note).join(""):`<div class="mut" style="padding:8px 0">Nothing looked at yet.</div>`}</div>
       <div class="dk-cardx"><div class="dk-h">${sessDay===day?"Today's trades":"Last session · "+esc(wDay(sessDay))} <b>${sess.length?`${w}–${l} · ${wm(sessPnl)}`:"none"}</b><span class="x">click a trade</span></div>
         ${sess.length?sess.map(line).join(""):`<div class="mut" style="padding:8px 0">No trades${sessDay===day?" yet today":""}.</div>`}
         <div class="win43-sc"><div><div class="n">${wkT.filter(t=>+t.pnl_realistic>0).length}</div><div class="l">Wins · wk</div></div><div><div class="n">${wkT.filter(t=>+t.pnl_realistic<0).length}</div><div class="l">Losses · wk</div></div><div><div class="n ${(j.day_pnl||0)>0?"up":(j.day_pnl||0)<0?"dn":""}">${tradesToday.some(t=>t.status!=="open")?wm(+j.day_pnl||0):"—"}</div><div class="l">Today</div></div><div><div class="n ${wkNow>0?"up":wkNow<0?"dn":""}">${wkNow==null?"—":wm(wkNow)}</div><div class="l">Week</div></div></div></div></div>`;
 }
+/* v5.5 (5 Nov): two text chips — today's day bias per name and the event-day flag (Ifoma: "yes, add chips") */
+function winV55(j){const v=(j&&j.v55)||{},by=v.day_bias||{},ev=v.event_day,out=[];
+  Object.values(by).forEach(b=>{if(!b||!b.ticker)return;const on=!b.cleared_ms;
+    out.push(`<span class="v55c ${on?(b.dir==="short"?"s":"l"):"x"}" title="${esc(b.name||"")}${on?"":" — reclaimed"}">${esc(b.ticker)} ${b.dir==="short"?"short below":"long above"} ${esc(String(b.level))}${on?"":" · ended"}</span>`)});
+  if(ev&&ev.on)out.push(`<span class="v55c e" title="${esc((ev.why||[]).join("; "))}">Event day${ev.dir?" · "+(ev.dir==="risk_off"?"risk-off (puts)":"risk-on (calls)"):""}</span>`);
+  return out.length?`<div class="v55row">${out.join("")}</div>`:""}
 function winHow(j){
   const c=j.config||{},own=+c.own_idea_from_min||600,ownT=`${Math.floor(own/60)}:${String(own%60).padStart(2,"0")}`,uni=(c.universe||[]);
   const step=(t,s)=>`<div><b>${t}</b><span>${s}</span></div>`;

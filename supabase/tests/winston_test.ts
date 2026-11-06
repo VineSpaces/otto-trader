@@ -95,7 +95,7 @@ function fakeMd(service: string, tool: string, args: any) {
   const guard = (globalThis as any).__ALLOW_ORDER_TOOLS;
   if (!guard && /place_|cancel_|exercise|(^|[^a-z])review_|portfolio|positions|get_option_orders|get_equity_orders|pnl|accounts/.test(tool)) throw new Error("TEST FAIL: Winston called " + tool);
   if (tool === "get_equity_quotes") return { data: { results: args.symbols.filter((s: string) => W.spot[s]).map((s: string) => ({ quote: { symbol: s, last_trade_price: String(W.spot[s]), adjusted_previous_close: String(W.prev[s] ?? W.spot[s]) } })) } };
-  if (tool === "get_equity_historicals") return { data: { results: args.symbols.filter((s: string) => W.bars[s]).map((s: string) => ({ symbol: s, bars: W.bars[s] })) } };
+  if (tool === "get_equity_historicals") return { data: { results: args.symbols.filter((s: string) => W.bars[s]).map((s: string) => ({ symbol: s, bars: (W as any).respectStart && args.start_time ? W.bars[s].filter((b: any) => b.begins_at >= args.start_time) : W.bars[s] })) } };   // v5.5: a test can ask for start_time to be honoured
   if (tool === "get_option_chains") return { data: { chains: [{ symbol: args.underlying_symbol, can_open_position: true, expiration_dates: ["2026-10-14", "2026-10-16", "2026-10-23", "2026-11-06", "2026-11-20"] }] } };
   if (tool === "get_option_instruments") return { data: { instruments: Object.entries(W.opts).filter(([, o]) => (o.type || "call") === args.type && (o.exp || "2026-10-16") === args.expiration_dates).map(([id, o]) => ({ id, strike_price: o.strike.toFixed(4), expiration_date: o.exp || "2026-10-16", tradability: "tradable", state: "active" })) } };
   if (tool === "get_option_quotes") return { data: { results: args.instrument_ids.filter((id: string) => W.opts[id]).map((id: string) => { const o = W.opts[id]; return { quote: { instrument_id: id, bid_price: String(o.bid), ask_price: String(o.ask), mark_price: String((o.bid + o.ask) / 2), delta: String(o.delta), volume: o.vol, open_interest: o.oi, updated_at: o.at || new Date(NOW).toISOString() } }; }) } };
@@ -606,14 +606,15 @@ Deno.test("v3.36 gates: soft gates stamp in data mode and block in strict mode; 
   const hits = X.runGatesAll(base);
   eq(hits.map((h: any) => h.rule).sort(), ["W12", "W15", "W20", "W21", "W23", "W3", "fact", "fact"].sort(), "every gate fires");
   // v3.42: W12 (spread) is HARD in every mode; v3.45: W3 (no adding) is HARD in every mode; v5.3: W20 (re-entry chase) and fact (thesis contradicts the chart) are HARD too
-  const HARD = new Set(["W12", "W3", "W20", "fact"]);
+  const HARD = new Set(["W12", "W3", "W20", "fact", "W21"]);   // v5.5: W21 hard
   assert(hits.filter((h: any) => !HARD.has(h.rule)).every((h: any) => h.soft), "all soft in data mode except W12, W3, W20 and fact");
   assert(hits.filter((h: any) => HARD.has(h.rule)).every((h: any) => !h.soft), "W12, W3, W20 and fact are never soft");
   assert(X.runGates(base)?.rule === "W3" || X.runGates(base)?.rule === "W12", "data mode: the hard gates still block");
   assert(X.runGates({ ...base, spreadPct: 4 })?.rule === "W3", "data mode: already in the ticker blocks (22 Oct SPY 760P/759P adds)");
   assert(X.runGates({ ...base, spreadPct: 4, sameTickerOpen: false })?.rule === "W20", "v5.3 data mode: the re-entry chase blocks (8 trades, 1 win, −$162)");
-  assert(X.runGates({ ...base, spreadPct: 4, sameTickerOpen: false, reentryBeyondExit: null })?.rule === "fact", "v5.3 data mode: a thesis that contradicts the chart blocks (2 Nov ABT)");
-  const tight: any = { ...base, spreadPct: 4, sameTickerOpen: false, reentryBeyondExit: null, thesisWrong: null, coachResultAfter: null };
+  assert(X.runGates({ ...base, spreadPct: 4, sameTickerOpen: false, reentryBeyondExit: null })?.rule === "W21", "v5.5 data mode: the coach's sell-to level blocks (4 Nov SPY −$111)");
+  assert(X.runGates({ ...base, spreadPct: 4, sameTickerOpen: false, reentryBeyondExit: null, atCoachLevel: null })?.rule === "fact", "v5.3 data mode: a thesis that contradicts the chart blocks (2 Nov ABT)");
+  const tight: any = { ...base, spreadPct: 4, sameTickerOpen: false, reentryBeyondExit: null, thesisWrong: null, coachResultAfter: null, atCoachLevel: null };   // v5.5: W21 is hard
   assert(X.runGates(tight) === null, "data mode, spread under the threshold and not in the ticker: nothing blocks");
   assert(X.runGates({ ...tight, sameTickerOpen: true, dataMode: false })?.rule === "W3", "strict mode: W3 blocks");
   assert(X.runGates({ ...tight, dataMode: false })?.rule === "W15", "strict mode: the first soft gate blocks");
@@ -1476,9 +1477,14 @@ Deno.test("v5.3 coach posts are levels, not triggers (tick): no level -> passed 
   };
   const dec = (trigger: number | null) => () => ({ decisions: [{ ticker: "ABT", side: "call", source: "coach:511", thesis: "healthcare looks great", wrong_if_level: 108.58, target_level: 111, time_exit_min: 120, trigger_level: trigger, cites: [{ type: "coach_post", ref: "511" }] }], passes: [] });
   const bars = [barRow("2026-11-02T15:00:00Z", 109.1, 109.5, 109.0, 109.45), barRow("2026-11-02T15:10:00Z", 109.45, 109.7, 109.2, 109.48)];
-  // (1) the real 2 Nov ABT: a vibe post, no level -> C1, nothing opens, a shadow is booked (the ledger will say whether "looks great" was worth $45)
+  // (1) the real 2 Nov ABT: a bare CALL (side, no number). v5.5 B: never entered at the price — armed as a retrace to intraday VWAP for 90 minutes
   await start(109.63, bars); aiScript = dec(null); let r = await X.tick();
   eq(TABLES.winston_trades.length, 0, "no level: nothing opens: " + JSON.stringify(r.results));
+  eq(r.results?.[0]?.why, "armed retrace", "v5.5 B: armed as a retrace");
+  const ar = (TABLES.winston_settings.find((s) => s.key === "armed_ideas")?.value || []).find((a: any) => a.ticker === "ABT");
+  assert(ar && ar.mode === "retrace" && ar.expires_at && Date.parse(ar.expires_at) - Date.parse(ar.armed_at) === 90 * 60e3, "retrace, 90 minutes: " + JSON.stringify(ar));
+  // (1b) a LEVEL post with no number is still context -> C1 + shadow
+  await start(109.63, bars); TABLES.otto_jason[0].kind = "level"; aiScript = dec(null); r = await X.tick();
   assert(/^Coach post needs a level/.test(TABLES.winston_ideas.find((i) => i.source === "coach:511")?.reason || ""), "C1: " + JSON.stringify(TABLES.winston_ideas.map((i) => i.reason)));
   eq(TABLES.winston_shadows.map((x) => x.rule), ["C1"], "C1 shadow");
   // (2) Winston names 109.60 as the level but no 10-minute bar has closed above it yet -> armed, waits
@@ -1549,4 +1555,235 @@ Deno.test("v5.4.1 REDO: a coach post that got no decision is shown again as NEW 
   setNow("2026-10-14T14:31:00Z"); W.ai.n = 0; aiScript = (a: any) => { assert(!/REDO/.test(a.user) && !/\[id [12] NEW/.test(a.user), "nothing re-shown"); return { decisions: [], passes: [] }; };
   await X.tick();
   assert(!TABLES.winston_log.slice(-1).some((l) => l.kind === "no_decision" && l.data.redo_next?.length), "no new redo");
+});
+
+/* =========================== v5.5 COACH RULES (coach call 5 Nov 2026) — replays on the real 4–5 Nov bars =========================== */
+const v55Reset = () => { (W as any).respectStart = false; (W as any).atr = undefined; aiScript = null; };
+// real Robinhood 10-minute bars (5 Nov MU / AMZN, 4 Nov SPY), [UTC start, o, h, l, c, v]
+const MU5: [string, number, number, number, number, number][] = [["14:30", 752.77, 761.8105, 736.88, 741.88, 2715730], ["14:40", 741.99, 742.14, 721.29, 723.45, 2077999], ["14:50", 723.475, 726.55, 705.6543, 711, 2368809],
+  ["15:00", 711, 716.47, 704.29, 709.1199, 1792874], ["15:10", 695.615, 704.6, 694.1432, 700.711, 153393], ["15:20", 702.855, 703.99, 685.03, 695.735, 1689378], ["15:30", 695.57, 699.33, 688.01, 690.13, 1683642],
+  ["15:40", 690.245, 692.8, 675.23, 678.6296, 1386529], ["15:50", 669.92, 679.395, 667.1201, 670.78, 861117], ["16:00", 670.77, 675.95, 663.87, 674.82, 1252393], ["16:10", 674.81, 704.34, 674, 700.57, 2105903],
+  ["16:20", 700.565, 712.36, 700.565, 710.27, 1691636], ["16:30", 710.27, 713, 703.63, 707.0699, 1227169]];
+const AMZN5: [string, number, number, number, number, number][] = [["14:30", 271.65, 273.23, 269.05, 269.655, 3363249], ["14:40", 269.655, 269.7368, 265.02, 265.1501, 2320856], ["14:50", 265.1, 266.1063, 262.41, 263.06, 2174102],
+  ["15:00", 263.04, 263.3, 259.52, 259.91, 2062660], ["15:10", 259.89, 260.32, 257.45, 257.5, 1579413], ["15:20", 257.505, 257.94, 255.915, 256.16, 1545736], ["15:30", 256.16, 258.15, 256.0501, 256.85, 1360197],
+  ["15:40", 256.85, 257.21, 254.5218, 254.57, 1368335], ["15:50", 254.57, 255.18, 252.27, 254.788, 1713704], ["16:00", 254.76, 255.94, 254.18, 255.845, 816712], ["16:10", 255.84, 258.79, 255.75, 258.28, 1399948],
+  ["16:20", 258.31, 260.18, 258.27, 260, 1077459], ["16:30", 260.04, 260.75, 258.635, 260.28, 905099], ["16:40", 261.61, 261.69, 261.395, 261.41, 45150]];
+const MSFT5: [string, number, number, number, number, number][] = [["15:30", 540.91, 542.57, 539.598, 540.34, 496036], ["15:40", 537.035, 537.27, 537.01, 537.225, 11677], ["15:50", 537.18, 538.21, 532.675, 537.21, 670522],
+  ["16:00", 537.17, 537.8, 534.898, 537.63, 403449], ["16:10", 537.53, 542.43, 537.33, 541.99, 751599]];
+const SPY4: [string, number, number, number, number, number][] = [["14:30", 762.99, 765.95, 762.64, 765.92, 1284199], ["14:40", 765.93, 768.11, 765.54, 767.1585, 1240371], ["14:50", 767.19, 767.43, 765.9325, 767.23, 661544],
+  ["15:00", 767.27, 768.27, 766.954, 767.84, 841731], ["15:10", 767.85, 768.63, 766.95, 767.85, 587516], ["15:20", 767.84, 767.8951, 765.54, 766.528, 800751], ["15:30", 766.53, 767.66, 765.77, 767.1401, 574226],
+  ["15:40", 767.15, 767.69, 765.2, 765.42, 657317], ["15:50", 765.4102, 766.4462, 764.5, 766.05, 748199], ["16:00", 766.04, 766.77, 763.85, 765.57, 723094], ["16:10", 765.58, 766.55, 765.515, 766.015, 308032],
+  ["16:20", 766.01, 766.05, 763.41, 764.16, 480919]];
+const rows = (day: string, b: [string, number, number, number, number, number][]) => b.map(([t, o, h, l, c, v]) => barRow(`${day}T${t}:00Z`, o, h, l, c, v));
+const asBars = (day: string, b: [string, number, number, number, number, number][]) => X.parseBars({ data: { results: [{ symbol: "Z", bars: rows(day, b) }] } }).Z;
+
+Deno.test("v5.5 E homework: unfilled gaps, 50%/61.8% of the 60-day swing, the 20-day VWAP, daily structure", () => {
+  const d = (date: string, o: number, h: number, l: number, c: number) => ({ t: Date.parse(date + "T05:00:00Z"), o, h, l, c, v: 100 });
+  // MU daily (real): the 25 Sep high 1108.72 → the 4 Nov low 782 is the swing; 4 Nov gapped down under 3 Nov's low (845.25) and never came back
+  const mu = [d("2026-09-25", 1095.83, 1108.72, 1073, 1082.28), d("2026-10-02", 1107.345, 1108, 1072.01, 1074.89), d("2026-10-13", 934.07, 953.6, 929.03, 953.19), d("2026-10-22", 879.66, 908.3, 849.25, 856.49),
+    d("2026-10-28", 961.71, 990, 959.34, 983.23), d("2026-10-29", 967.935, 971.01, 927.24, 934.27), d("2026-10-30", 883.995, 906.54, 861.585, 884.74), d("2026-11-02", 890.535, 892.08, 829.2401, 833.59),
+    d("2026-11-03", 859.925, 871.49, 845.25, 855.1), d("2026-11-04", 822.995, 853.3399, 782, 795.23)];
+  const hw: any = X.homework(mu, "2026-11-05");
+  eq([hw.swing.dir, hw.swing.hi, hw.swing.lo, hw.swing.f50, hw.swing.f618], ["down", 1108.72, 782, 945.36, 983.91], "the swing and its retracements (down swing: measured up from the low)");
+  eq([hw.h5, hw.l5], [971.01, 782], "5-day range (the last five bars given: 29 Oct – 4 Nov)");
+  assert(hw.gaps.some((g: any) => g.dir === "down" && g.on === "2026-10-30" && g.lo === 906.54 && g.hi === 927.24), "30 Oct gap down (906.54–927.24) is unfilled: " + JSON.stringify(hw.gaps));
+  assert(!hw.gaps.some((g: any) => g.on === "2026-11-04"), "4 Nov opened inside 3 Nov's range (853.34 high > 845.25 low): not a gap");
+  assert(hw.vwap20 > 782 && hw.vwap20 < 1108.72, "a 20-day VWAP inside the range");
+  const line = X.hwLine({ hw, atr14: 50.85 }, 741.88);
+  assert(/60d swing down 782-1108.72: 50% 945.36, 61.8% 983.91/.test(line) && /20d VWAP .* ATR\)/.test(line), "the homework line: " + line);
+  eq(X.homework(mu.slice(0, 3), "2026-11-05"), null, "fewer than 5 days: no homework (never a guess)");
+  const keys = X.keyLevels({ y_l: 782, y_h: 853.34, wk_l: 861.585, mo_l: 849.25, hw }).map((k: any) => k.name);
+  assert(keys[0] === "prior-month low" && keys.includes("yesterday's low") && keys.some((k: string) => k.startsWith("gap")), "key levels, month first: " + keys.join(", "));
+});
+
+Deno.test("v5.5 A (pure): MU 5 Nov — 769 broken pre-market and on the first close = SHORT bias; the bias holds; the first rebalance fires at the 11:30 bar, not before", () => {
+  const mu = asBars("2026-11-05", MU5);
+  const posts = [{ id: 660, kind: "level", ticker: "MU", direction: "short", level: "769", posted_label: "9:02 AM" }, { id: 699, kind: "level", ticker: "MU", level: "650", posted_label: "11:02 AM" }];
+  const lv = X.coachOpenLevels(posts, "MU");
+  eq(lv.map((x: any) => x.level), [769], "only the pre-9:45 level counts");
+  const b = X.biasFromOpen("MU", 795.23, mu, "2026-11-05", lv, X.keyLevels({ y_l: 782, y_h: 853.34 }));
+  assert(b && b.dir === "short" && b.level === 769 && b.source === "coach:660", "short bias from the coach's 769 (coach levels win over yesterday's 782): " + JSON.stringify(b));
+  eq(b.set_ms, Date.parse("2026-11-05T14:40:00Z"), "set when the 9:30 bar closed");
+  eq(X.biasFromOpen("MU", 760, mu, "2026-11-05", lv, []), null, "yesterday closed under 769 already: no break today, no bias");
+  eq(X.biasReclaim(b, mu, Date.parse("2026-11-05T16:41:00Z")), null, "no 10-minute close back above 769 all morning");
+  const rec = [...mu, { t: Date.parse("2026-11-05T16:40:00Z"), o: 760, h: 772, l: 759, c: 770.5, v: 1 }];
+  eq(X.biasReclaim(b, rec, Date.parse("2026-11-05T16:51:00Z"))?.c, 770.5, "a close at 770.50 reclaims → the bias ends");
+  assert(X.biasAgrees(b, "put") && !X.biasAgrees(b, "call") && !X.biasAgrees({ ...b, cleared_ms: 1 }, "put"), "puts agree; cleared = nothing agrees");
+  const minB = 0.3 * 50.85;
+  const at = (iso: string) => X.rebalanceFire("down", mu, "2026-11-05", b.set_ms, minB, Date.parse(iso));
+  for (const t of ["2026-11-05T14:51:00Z", "2026-11-05T15:21:00Z", "2026-11-05T16:01:00Z", "2026-11-05T16:21:00Z", "2026-11-05T16:31:00Z"]) assert(!at(t), "no rebalance yet at " + t + " (bounces were < 0.3 ATR = $15.26 until 11:10; the 11:10 and 11:20 bars are green)");
+  assert(at("2026-11-05T16:41:00Z"), "the 11:30 bar (close 707.07 < open 710.27 and < the 710.27 close before it) is the first rebalance");
+  assert(!X.rebalanceFire("down", mu, "2026-11-05", Date.parse("2026-11-05T16:45:00Z"), minB, Date.parse("2026-11-05T16:41:00Z")), "a bar that ended before the idea was armed never fires it");
+});
+
+Deno.test("v5.5 A (tick): MU 5 Nov replay — at 9:41 the coach's 769 short is ARMED as a rebalance (not passed as a 3.5% chase); at 11:41 it fills; a reclaim clears the bias and drops it", async () => {
+  const day = "2026-11-05";
+  const go = async () => {
+    seed(); v55Reset();
+    TABLES.winston_settings[0].value = { enabled: true, paper_balance: 5000, mode: "data", max_open: 4, min_time_exit_min: 120, coach_idea_from_min: 571, own_idea_from_min: 585, limits_override: { daily_on: false }, coach_chase_pct: 0.5, spread_cap_pct: 1, min_contract_price: 1 };
+    W.prev = { MU: 795.23, QQQ: 676.9, TLT: 81.5 }; W.calls.length = 0; W.ai.n = 0; (W as any).atr = { MU: 50.85 };
+    W.opts = { mu700p: { strike: 700, bid: 4.6, ask: 4.9, delta: -0.4, vol: 900, oi: 900, exp: "2026-11-06", type: "put" } };
+    TABLES.otto_jason.push({ id: 660, day, posted_label: "9:02 AM", kind: "level", ticker: "MU", direction: "short", level: "769", words: "CHIPS WEAK / MU BELOW $769", late: false });
+  };
+  await go(); setNow("2026-11-05T14:41:00Z");
+  W.spot = { MU: 741.88, QQQ: 674.99, TLT: 81.65 }; W.bars = { MU: rows(day, MU5.slice(0, 1)) };
+  aiScript = () => ({ decisions: [{ ticker: "MU", side: "put", source: "coach:660", thesis: "MU below 769, chips weak", wrong_if_level: 769, target_level: 661, time_exit_min: 120, cites: [{ type: "coach_post", ref: "660" }] }], passes: [] });
+  let r = await X.tick();
+  const bias = TABLES.winston_settings.find((s) => s.key === "day_bias")?.value;
+  assert(bias?.day === day && bias.by.MU?.dir === "short" && bias.by.MU.level === 769, "day bias MU short below 769: " + JSON.stringify(bias));
+  eq(r.results?.[0]?.why, "armed rebalance", "armed as a rebalance: " + JSON.stringify(r.results));
+  assert(!TABLES.winston_ideas.some((i) => /Chasing/.test(i.reason || "")), "the 0.5% chase line (C2) does not apply with the day bias");
+  eq(TABLES.winston_trades.length, 0, "nothing at the open price");
+  eq(TABLES.winston_settings.find((s) => s.key === "event_day")?.value?.read?.on, false, "9:41: QQQ −0.3% — not an event day yet");
+  // 11:31: the 11:20 bar was green — still waiting
+  setNow("2026-11-05T16:31:00Z"); W.spot.MU = 710.27; W.bars = { MU: rows(day, MU5.slice(0, 12)) }; aiScript = () => ({ decisions: [], passes: [] });
+  r = await X.tick();
+  eq(TABLES.winston_trades.length, 0, "11:31: no rebalance close yet");
+  // 11:41: the 11:30 bar closed red and lower = the first rebalance → fills
+  setNow("2026-11-05T16:41:00Z"); W.spot.MU = 707.07; W.bars = { MU: rows(day, MU5) }; W.spot.QQQ = 657.6; W.spot.TLT = 82.14;   // by 11:41 QQQ −2.85%, TLT +0.8%
+  r = await X.tick();
+  const ev = TABLES.winston_settings.find((s) => s.key === "event_day")?.value?.read;
+  assert(ev?.on && ev.dir === "risk_off", "QQQ −2.85% with TLT +0.8% = event day, risk-off: " + JSON.stringify(ev));
+  eq(TABLES.winston_trades.length, 1, "11:41: the rebalance fills: " + JSON.stringify(r.armed) + " " + JSON.stringify(TABLES.winston_ideas.map((i) => i.reason)));
+  const t = TABLES.winston_trades[0];
+  eq([t.ticker, t.side, t.source, t.entry_under], ["MU", "put", "coach:660", 707.07], "the coach's MU put, at the rebalance price");
+  assert(/first rebalance with the day bias/.test(t.plan.thesis), "the thesis says why it fired: " + t.plan.thesis);
+  assert(t.plan.v55?.day_bias?.level === 769 && t.plan.v55.event_with === true, "plan carries the bias and the event-day flag: " + JSON.stringify(t.plan.v55));
+  assert(!(t.flags || []).some((f: string) => /W26/.test(f)), "no W26 'move done' stamp on a trade with the day bias (MU −11%)");
+  // reclaim: same arming, then a close back above 769 before any rebalance → bias ends and the armed idea is dropped
+  await go(); setNow("2026-11-05T14:41:00Z"); W.spot = { MU: 741.88, QQQ: 674.99, TLT: 81.65 }; W.bars = { MU: rows(day, MU5.slice(0, 1)) };
+  aiScript = () => ({ decisions: [{ ticker: "MU", side: "put", source: "coach:660", thesis: "MU below 769", wrong_if_level: 790, target_level: 700, time_exit_min: 120, cites: [{ type: "coach_post", ref: "660" }] }], passes: [] });
+  await X.tick();
+  setNow("2026-11-05T15:01:00Z"); W.spot.MU = 771; aiScript = () => ({ decisions: [], passes: [] });
+  W.bars = { MU: [...rows(day, MU5.slice(0, 1)), barRow("2026-11-05T14:40:00Z", 742, 772, 741, 770.5, 1000), barRow("2026-11-05T14:50:00Z", 770.5, 773, 768, 771, 1000)] };
+  await X.tick(); setNow("2026-11-05T15:11:00Z"); await X.tick();
+  assert(TABLES.winston_settings.find((s) => s.key === "day_bias")?.value.by.MU.cleared_close === 770.5, "the 9:40 close at 770.50 reclaimed 769");
+  assert(TABLES.winston_ideas.some((i) => /Armed rebalance dropped: the day bias ended/.test(i.reason || "")), "the armed rebalance is dropped: " + JSON.stringify(TABLES.winston_ideas.map((i) => i.reason)));
+  eq(TABLES.winston_trades.length, 0, "nothing opened after the reclaim");
+  v55Reset();
+});
+
+Deno.test("v5.5 C: SPY 4 Nov replay — the 4h trend is UP at 11:31, so the coach's 764.35 is a bounce level: the short into it is refused (T1) with a shadow; a call is not", async () => {
+  const day = "2026-11-04";
+  // prior half-sessions (open–12:30 / 12:30–close), from the real daily + 4-hour bars of 30 Oct – 3 Nov
+  const halves = [["2026-10-29T14:30:00Z", 768.79, 770.76, 766.62, 769.5], ["2026-10-29T18:00:00Z", 769.5, 770.22, 766.62, 769.36], ["2026-10-30T14:30:00Z", 761.38, 761.46, 752, 756], ["2026-10-30T18:00:00Z", 756, 758.01, 750.36, 755.72],
+    ["2026-11-02T14:30:00Z", 759.45, 763.86, 755, 756], ["2026-11-02T18:00:00Z", 756, 756.24, 751.46, 752.1], ["2026-11-03T14:30:00Z", 752.73, 757.07, 752.39, 754], ["2026-11-03T18:00:00Z", 754, 757.79, 753.59, 754.35]]
+    .map(([t, o, h, l, c]) => barRow(String(t), +o, +h, +l, +c, 1000));
+  const spyB = asBars(day, SPY4), all = X.parseBars({ data: { results: [{ symbol: "SPY", bars: [...halves, ...rows(day, SPY4)] }] } }).SPY;
+  const dc = { y_c: 754.35, h4: X.halfDays(all.filter((b: any) => b.t < Date.parse("2026-11-04T05:00:00Z"))).slice(-6).map((x: any) => [x.h, x.l]), hw: { d_struct: "mixed", vwap20: 766.9 } };
+  const tr = X.trendRead(dc, spyB, 764.64, Date.parse("2026-11-04T16:31:00Z"));
+  eq([tr.trend, tr.h4], ["up", "up"], "4h: 3 Nov PM + 4 Nov AM made a higher high (768.63 > 763.86) and a higher low (752.39 > 750.36): " + JSON.stringify(tr));
+  assert(/bounce \(long\) level/.test(X.trendGateProblem("put", tr, false) || ""), "a put against an up trend is refused");
+  eq(X.trendGateProblem("call", tr, false), null, "a call with the trend passes");
+  eq(X.trendGateProblem("put", tr, true), null, "a day bias that agrees overrides the trend gate");
+  eq(X.trendGateProblem("put", { ...tr, trend: "mixed" }, false), null, "no clear trend: no T1");
+  // the tick: Winston proposes the real 4 Nov short (put, trigger 764.90, wrong-if 767.70, target 761) off the coach's 764 post
+  seed(); v55Reset(); setNow("2026-11-04T16:31:00Z"); (W as any).respectStart = true;
+  TABLES.winston_settings[0].value = { enabled: true, paper_balance: 5000, mode: "data", max_open: 4, min_time_exit_min: 120, coach_idea_from_min: 571, own_idea_from_min: 585, limits_override: { daily_on: false } };
+  W.spot = { SPY: 764.64, QQQ: 700, TLT: 81 }; W.prev = { SPY: 754.35, QQQ: 698, TLT: 81 }; W.calls.length = 0; W.ai.n = 0;
+  W.bars = { SPY: [...halves, ...rows(day, SPY4)] };
+  W.opts = { spy762p: { strike: 762, bid: 1.6, ask: 1.65, delta: -0.4, vol: 900, oi: 900, exp: "2026-11-06", type: "put" } };
+  TABLES.otto_jason.push({ id: 636, day, posted_label: "9:57 AM", kind: "level", ticker: "SPY", direction: null, level: "764.35", words: "SPY COMING BACK TO $764.35 LIKELY", late: false },
+    { id: 653, day, posted_label: "11:15 AM", kind: "level", ticker: "SPY", direction: "short", level: "764", words: "SPY HIT THE VWAP 764 ISH AREA AND BOUNCED. AGAIN BELOW 768 IS NOT BULLISH", late: false });
+  aiScript = () => ({ decisions: [{ ticker: "SPY", side: "put", source: "coach:653", thesis: "below 768 is not bullish; short the break of 764.9", wrong_if_level: 767.7, target_level: 761, trigger_level: 764.9, time_exit_min: 120, cites: [{ type: "coach_post", ref: "653" }] }], passes: [] });
+  await X.tick();
+  const idea = TABLES.winston_ideas.find((i) => i.source === "coach:653");
+  assert(idea?.status === "blocked" && /^T1: trend is UP/.test(idea.reason), "T1 refuses the 4 Nov SPY short: " + JSON.stringify(idea));
+  eq(TABLES.winston_shadows.map((x) => x.rule), ["T1"], "a T1 shadow (the ledger scores the gate)");
+  eq(TABLES.winston_trades.length, 0, "no trade");
+  v55Reset();
+});
+
+Deno.test("v5.5 C: W21 is HARD in data mode (no entry within $0.50 of the coach's level that is the trade's target)", () => {
+  const base: any = { rules: [{ id: "W21", active: true, params: {} }], d: { wrong_if_level: 767.7, target_level: 761 }, cap: 1000, maxLoss: 500, planned_loss: 100, cost: 165, cash: 5000, stop_option: 0.6, ask: 1.65,
+    openCount: 0, maxOpen: 4, tickerTakenToday: false, sameTickerOpen: false, spreadPct: 3, quoteAgeSec: 2, blackout: null, coachCall: true, etMin: 690, lastEntryMin: 930, ownFromMin: 585, coachFromMin: 571, dataMode: true,
+    atCoachLevel: X.atCoachLevel("put", 764.64, [{ ticker: "SPY", kind: "level", level: 764.35, direction: null }], "SPY") };
+  assert(base.atCoachLevel, "764.64 is within $0.50 of 764.35");
+  eq(X.runGates(base)?.rule, "W21", "blocks in data mode (was a stamp until v5.5)");
+  eq(X.runGates({ ...base, trendAgainst: "trend is UP" })?.rule, "W21", "T1 is hard too (W21 is checked first in the gate order)");
+  eq(X.runGates({ ...base, atCoachLevel: null, trendAgainst: "trend is UP" })?.rule, "T1", "T1 blocks on its own");
+});
+
+Deno.test("v5.5 B: a bare call is armed as a retrace to intraday VWAP; it fires on the close that reclaims after the pullback; 90 minutes without one = dropped + B90 shadow", async () => {
+  const day = "2026-11-02";
+  const bar = (m: number, o: number, h: number, l: number, c: number) => ({ t: X.etToUtcMs(day, m), o, h, l, c, v: 1000 });
+  const up = [bar(570, 100, 101, 99.8, 100.9), bar(580, 100.9, 101.8, 100.8, 101.7), bar(590, 101.7, 102.6, 102.0, 102.5), bar(600, 102.5, 102.6, 101.3, 101.4), bar(610, 101.4, 101.5, 101.1, 101.25), bar(620, 101.25, 102.2, 101.2, 102.1)];
+  const since = X.etToUtcMs(day, 595);
+  assert(!X.retraceFire("up", up.slice(0, 4), day, since, 0.3, X.etToUtcMs(day, 611)), "pulling back, no reclaim yet");
+  assert(!X.retraceFire("up", up.slice(0, 5), day, since, 0.3, X.etToUtcMs(day, 621)), "touched VWAP, the 10:10 bar is not a reclaim (red-ish, lower close)");
+  assert(X.retraceFire("up", up, day, since, 0.3, X.etToUtcMs(day, 631)), "the 10:20 bar closes back up above VWAP after the touch = enter");
+  assert(!X.retraceFire("up", up.slice(0, 3), day, since, 0.3, X.etToUtcMs(day, 601)), "no pullback at all: never enter at the current price");
+  assert(!X.retraceFire("down", up, day, since, 0.3, X.etToUtcMs(day, 631)), "a short does not fire on a green reclaim");
+  // the tick: the 2 Nov ABT bare call is armed, then expires 90 minutes later with a B90 shadow
+  seed(); v55Reset(); setNow("2026-11-02T15:22:00Z");
+  TABLES.winston_settings[0].value = { enabled: true, paper_balance: 5000, mode: "data", max_open: 4, min_time_exit_min: 120, coach_idea_from_min: 571, own_idea_from_min: 585, limits_override: { daily_on: false } };
+  W.spot = { ABT: 109.63, SPY: 680, QQQ: 600, TLT: 90 }; W.prev = { ABT: 106.2, SPY: 681, QQQ: 601, TLT: 90 }; W.calls.length = 0; W.ai.n = 0;
+  W.opts = { c110: { strike: 110, bid: 1.25, ask: 1.30, delta: 0.40, vol: 900, oi: 400, exp: "2026-11-06", type: "call" } };
+  W.bars = { ABT: [barRow("2026-11-02T15:00:00Z", 109.1, 109.5, 109.0, 109.45), barRow("2026-11-02T15:10:00Z", 109.45, 109.7, 109.2, 109.48)] };
+  TABLES.otto_jason.push({ id: 511, day, posted_label: "10:15 AM", kind: "call", ticker: "ABT", direction: "long", level: null, words: "ABT / healthcare looks great", late: false });
+  aiScript = () => ({ decisions: [{ ticker: "ABT", side: "call", source: "coach:511", thesis: "healthcare looks great", wrong_if_level: 108.58, target_level: 111, time_exit_min: 120, cites: [{ type: "coach_post", ref: "511" }] }], passes: [] });
+  await X.tick();
+  eq(TABLES.winston_trades.length, 0, "never entered at the current price");
+  aiScript = () => ({ decisions: [], passes: [] });
+  setNow("2026-11-02T16:53:00Z");                                                  // 91 minutes later, price only went up — never retraced
+  W.bars.ABT = [...W.bars.ABT, ...[0, 1, 2, 3, 4, 5, 6, 7, 8].map((k) => barRow(new Date(Date.parse("2026-11-02T15:20:00Z") + k * 600e3).toISOString().replace(".000", ""), 109.6 + k * 0.03, 109.7 + k * 0.03, 109.58 + k * 0.03, 109.65 + k * 0.03))];
+  W.spot.ABT = 109.9;
+  await X.tick();
+  assert(TABLES.winston_ideas.some((i) => /Armed retrace expired after 90 minutes/.test(i.reason || "")), "expired: " + JSON.stringify(TABLES.winston_ideas.map((i) => i.reason)));
+  assert(TABLES.winston_shadows.some((x) => x.rule === "B90"), "B90 shadow booked (the ledger will say what waiting cost)");
+  eq(TABLES.winston_trades.length, 0, "nothing opened");
+  v55Reset();
+});
+
+Deno.test("v5.5 D: event day — 5 Nov (DEFENSIVE open) is one, risk-off; a quiet day is not; scheduled events and catalysts count; the relaxation is with the sentiment only", () => {
+  const q = (spot: number, prev: number) => ({ spot, prev });
+  const e5 = X.eventDayRead("2026-11-05", [], [], q(657.6, 676.9), q(82.1, 81.5), true);
+  assert(e5.on && e5.dir === "risk_off" && /DEFENSIVE open/.test(e5.why.join(";")), "5 Nov: " + JSON.stringify(e5));
+  const quiet = X.eventDayRead("2026-11-06", [], [], q(677, 676.9), q(81.5, 81.48), true);
+  assert(!quiet.on && quiet.dir === null, "a quiet day is not an event day: " + JSON.stringify(quiet));
+  eq(X.eventDayRead("2026-11-05", [], [], q(657.6, 676.9), q(82.1, 81.5), false).on, false, "the open read needs the 9:40 close (before it: nothing)");
+  assert(X.eventDayRead("2026-11-04", [], [], undefined, undefined, false).on, "the day after the election is an event day");
+  const qc = X.eventDayRead("2026-11-06", [], [{ symbol: "QCOM", pct: -8.2 }, { symbol: "ARM", pct: -3 }], undefined, undefined, false);
+  assert(qc.on && qc.dir === "risk_off" && qc.why.length === 1 && /QCOM -8.2%/.test(qc.why[0]), "QCOM −8% after earnings = catalyst; ARM −3% is not: " + JSON.stringify(qc));
+  const cpi = X.eventDayRead("2026-11-12", ["CPI at 8:30 AM ET"], [], q(676, 676.9), q(81.5, 81.5), true);
+  assert(cpi.on && cpi.dir === null, "CPI with a flat open: event day, but no direction → nothing relaxes");
+  assert(X.withSentiment(e5, "put") && !X.withSentiment(e5, "call") && !X.withSentiment(quiet, "put"), "risk-off relaxes puts only");
+  // what the relaxation does to W26: a put on a stock −6% is 'done' at 5% but not at 8%
+  assert(X.moveDone("put", "AMD", q(94, 100), {}), "default 5%: stamps");
+  eq(X.moveDone("put", "AMD", q(94, 100), { stock_pct: 8, index_pct: 2.5 }), null, "event day with the sentiment: 8% line");
+  eq(X.moveDone("put", "SPY", q(98, 100), { stock_pct: 8, index_pct: 2.5 }), null, "index: 2.5% line");
+});
+
+Deno.test("v5.5 F: AMZN 5 Nov replay — the rebalance exit takes it at the 11:00 bar's close (255.85) instead of the 11:50 stop (261.41); MSFT's winner is not cut early", async () => {
+  const day = "2026-11-05";
+  const amzn = asBars(day, AMZN5), msft = asBars(day, MSFT5);
+  const plan = { dir: "down" as const, wrong_if_level: 260.4, wrong_if_orig: 260.4 };
+  const enteredA = Date.parse("2026-11-05T15:51:07Z");
+  eq(X.rebalanceExit(plan, amzn, enteredA, 254.06, day, 8.51, Date.parse("2026-11-05T16:00:30Z")), null, "10:00: only the entry bar is done");
+  const why = X.rebalanceExit(plan, amzn, enteredA, 254.06, day, 8.51, Date.parse("2026-11-05T16:10:30Z"));
+  assert(/up 0.28R, then a 10-minute close 255.845 back above the prior bar's high 255.18/.test(why || ""), "11:10: +0.28R then the reversal close: " + why);
+  const mplan = { dir: "down" as const, wrong_if_level: 545.2, wrong_if_orig: 545.2 };
+  eq(X.rebalanceExit(mplan, msft, Date.parse("2026-11-05T15:41:08Z"), 540.8, day, 9.5, Date.parse("2026-11-05T16:10:30Z")), null, "MSFT at 11:10: still below VWAP, no reversal bar — not cut (W22 took it +$130)");
+  assert(X.rebalanceExit(mplan, msft, Date.parse("2026-11-05T15:41:08Z"), 540.8, day, 9.5, Date.parse("2026-11-05T16:20:30Z")), "MSFT at 11:20 (541.99, back above VWAP after +1.85R) would be out");
+  eq(X.rebalanceExit({ dir: "down", wrong_if_level: 260.4 }, amzn.slice(0, 8), Date.parse("2026-11-05T15:01:00Z"), 263.04, day, 8.51, Date.parse("2026-11-05T15:51:00Z")), null, "a short that is working (lower closes) is left alone");
+  // the tick path: manageOpen closes it as 'rebalance'
+  seed(); v55Reset(); setNow("2026-11-05T16:11:00Z");
+  W.bars = { AMZN: rows(day, AMZN5.slice(0, 10)) }; W.spot = { AMZN: 255.845 };
+  W.opts = { amzn250p: { strike: 250, bid: 2.9, ask: 3.0, delta: -0.4, vol: 900, oi: 900, exp: "2026-11-06", type: "put" } };
+  TABLES.winston_settings.push({ key: "daily_ctx", value: { day, by: { AMZN: { atr14: 8.51 } } } });
+  TABLES.winston_trades.push({ id: 55, day, status: "open", ticker: "AMZN", side: "put", option_id: "amzn250p", label: "AMZN 250P 11/06", qty: 1, source: "own", opened_at: "2026-11-05T15:51:07.550Z",
+    entry_bid: 3.5, entry_ask: 3.6, entry_mid: 3.55, entry_fill: 3.6, entry_under: 254.06, flags: [], broke: [],
+    plan: { dir: "down", wrong_if_level: 260.4, wrong_if_orig: 260.4, target_level: 250.5, time_exit_min: 120, stop_option: 1.1, planned_loss: 250, delta: -0.4 } });
+  await X.manageOpen({ flat_min: 950 }, day, 671, 960);
+  const t = TABLES.winston_trades[0];
+  eq([t.status, t.exit_reason], ["closed", "rebalance"], "closed by the rebalance exit: " + JSON.stringify([t.status, t.exit_reason]));
+  assert(TABLES.winston_log.some((l) => l.kind === "rebalance" && l.data.id === 55), "logged with the reason");
+  assert(X.EARLY_EXITS.includes("rebalance"), "the after-exit ledger scores it like the other early exits");
+  v55Reset();
+});
+
+Deno.test("v5.5 G: W22 unchanged (coach: 'he's doing the right thing'); live week 1 now takes own ideas (Ifoma: flip it)", () => {
+  eq(X.EARLY_EXITS.slice(0, 4), ["coach_exit", "time", "trail", "breakeven"], "W22 still the coach_exit");
+  eq(X.liveLimitsOf({}).coach_only, false, "default: own + coach level ideas");
+  eq(X.liveLimitsOf({ coach_only: true }).coach_only, true, "the switch still works");
 });
