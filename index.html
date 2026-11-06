@@ -2750,7 +2750,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.5.0";
+const BUILD="5.6.0";
 const ROUTINE=[
  {n:1,title:"The bond market",src:"The 10-year live, plus the official close",calls:[{k:"t10"}]},
  {n:2,title:"One currency pair",src:"USD / JPY, spot",calls:[{k:"jpy"}]},
@@ -4726,7 +4726,11 @@ function winV55(j){const v=(j&&j.v55)||{},by=v.day_bias||{},ev=v.event_day,out=[
   Object.values(by).forEach(b=>{if(!b||!b.ticker)return;const on=!b.cleared_ms;
     out.push(`<span class="v55c ${on?(b.dir==="short"?"s":"l"):"x"}" title="${esc(b.name||"")}${on?"":" — reclaimed"}">${esc(b.ticker)} ${b.dir==="short"?"short below":"long above"} ${esc(String(b.level))}${on?"":" · ended"}</span>`)});
   if(ev&&ev.on)out.push(`<span class="v55c e" title="${esc((ev.why||[]).join("; "))}">Event day${ev.dir?" · "+(ev.dir==="risk_off"?"risk-off (puts)":"risk-on (calls)"):""}</span>`);
-  return out.length?`<div class="v55row">${out.join("")}</div>`:""}
+  /* v5.6 (6 Nov): the brain and the loss cap are settings — shown always, changed in the Mode and rules popup */
+  const c=(j&&j.config)||{},brain=c.model==="sonnet"?"Sonnet 4.6":"Opus 5.5";
+  out.push(`<span class="v55c" title="Winston's reasoning model — switch it in Mode and rules">Brain · ${brain}</span>`);
+  out.push(`<span class="v55c" title="The most one trade may lose: the tighter of the dollar cap and the share of the premium">Loss cap · $${+c.max_loss_usd||100} · ${+c.max_loss_pct_premium||35}% of premium</span>`);
+  return `<div class="v55row">${out.join("")}</div>`}
 function winHow(j){
   const c=j.config||{},own=+c.own_idea_from_min||600,ownT=`${Math.floor(own/60)}:${String(own%60).padStart(2,"0")}`,uni=(c.universe||[]);
   const step=(t,s)=>`<div><b>${t}</b><span>${s}</span></div>`;
@@ -4756,8 +4760,9 @@ async function winPop(kind,arg){
   if(kind==="report")return v4Open(v4Ph(null,"Today report","what he took, what he passed and why, the money three ways"),`<div class="win43-popbody">${winReport(j)}${winGatesBox(j)}</div>`,o=>{const sel=o.querySelector("#winDay");if(sel)sel.onchange=()=>{WIN.day=sel.value;winPop("report")}});
   if(kind==="score"){const body=await winScore(j);return v4Open(v4Ph(null,"Scorecard","all time · Winston vs Josh + Baby J"),`<div class="win43-popbody">${body}</div>`,o=>o.querySelectorAll("[data-wpop=trade]").forEach(b=>b.onclick=()=>winPop("trade",b.dataset.wid)))}
   if(kind==="rules"){const c=j.config||{},data=c.mode==="data";
-    return v4Open(v4Ph(null,"Mode and rules",data?"data mode · soft gates stamp instead of block":"strict · every gate blocks"),`<div class="win43-popbody"><button class="dk-btn sec" id="winMode" data-mode="${data?"strict":"data"}">${data?"Switch to strict":"Switch to data mode"}</button><div class="mut" style="font-size:12px;margin:6px 0 12px">Hard gates in every mode: plan, risk/size, cash, max open, time windows, W12 spread 15%, W3 no adding.</div>
+    return v4Open(v4Ph(null,"Mode and rules",data?"data mode · soft gates stamp instead of block":"strict · every gate blocks"),`<div class="win43-popbody"><button class="dk-btn sec" id="winMode" data-mode="${data?"strict":"data"}">${data?"Switch to strict":"Switch to data mode"}</button> <button class="dk-btn sec" id="winBrain" data-model="${c.model==="sonnet"?"opus":"sonnet"}">Brain: ${c.model==="sonnet"?"Sonnet 4.6":"Opus 5.5"} → switch to ${c.model==="sonnet"?"Opus 5.5":"Sonnet 4.6"}</button><div class="mut" style="font-size:12px;margin:6px 0 12px">Hard gates in every mode: plan, risk/size, cash, max open, time windows, W12 spread 15%, W3 no adding. Loss cap per trade: $${+c.max_loss_usd||100} and ${+c.max_loss_pct_premium||35}% of the premium (console: <code>winApi("config_set",{max_loss_usd:100,max_loss_pct_premium:35})</code>).</div>
       <div class="dk-cardx"><div class="dk-h">Rulebook <b>paper only</b></div>${(j.rules||[]).map(r=>`<div class="dk-row" style="align-items:flex-start"><span><b>${esc(r.id)}</b> ${esc(r.title||"")} <span class="mut">· ${esc(r.source||"")}</span><div class="mut" style="font-size:12px;max-width:760px">${esc(r.body||"")}</div></span><button class="dk-btn ${r.active?"go":"sec"}" data-wr="${esc(r.id)}" data-on="${r.active?1:0}">${r.active?"ON":"OFF"}</button></div>`).join("")}</div></div>`,o=>{
+      const bb=o.querySelector("#winBrain");if(bb)bb.onclick=async()=>{if(WIN.busy)return;WIN.busy=true;bb.disabled=true;try{await winApi("config_set",{model:bb.dataset.model});toast(bb.dataset.model==="sonnet"?"Winston now thinks with Sonnet 4.6 (from his next look)":"Winston now thinks with Opus 5.5 (from his next look)")}catch(e){alert("Could not switch the brain: "+e.message)}WIN.busy=false;v4Close();dkWinston(true)};
       const md=o.querySelector("#winMode");if(md)md.onclick=async()=>{if(WIN.busy)return;WIN.busy=true;md.disabled=true;try{await winApi("config_set",{mode:md.dataset.mode});toast(md.dataset.mode==="data"?"Data mode: soft gates stamp instead of block":"Strict mode: every gate blocks again")}catch(e){alert("Could not change the mode: "+e.message)}WIN.busy=false;v4Close();dkWinston(true)};
       o.querySelectorAll("[data-wr]").forEach(b=>b.onclick=async()=>{if(WIN.busy)return;WIN.busy=true;b.disabled=true;try{await winApi("rule_set",{id:b.dataset.wr,active:b.dataset.on!=="1"})}catch(e){alert("Could not change the rule: "+e.message)}WIN.busy=false;v4Close();dkWinston(true);winPop("rules")})});
   }

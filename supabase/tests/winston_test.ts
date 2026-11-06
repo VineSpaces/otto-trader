@@ -112,7 +112,7 @@ function fakeMd(service: string, tool: string, args: any) {
 let aiScript: ((a: any) => any) | null = null;
 function fakeAi(a: any) { W.ai.n++; W.ai.last = a; const out = aiScript ? aiScript(a) : { decisions: [], passes: [] }; return { out, usage: { input: 1000, output: 200 } }; }
 
-(globalThis as any).__WINSTON_TEST__ = { db: fakeDb, md: fakeMd, ai: fakeAi, now: () => NOW };
+(globalThis as any).__WINSTON_TEST__ = { db: fakeDb, md: fakeMd, ai: fakeAi, now: () => NOW, sleep: async (ms: number) => { NOW += ms; } };
 (globalThis as any).fetch = (u: any) => Promise.reject(new Error("network disabled in tests: " + String(u).slice(0, 80)));
 (Deno as any).serve = () => ({ finished: Promise.resolve() });
 const X = await import("../winston.ts");
@@ -449,6 +449,58 @@ Deno.test("replay 7: paused = no new entries but open trades are still managed; 
   assert([a, b].some((x: any) => x.skipped === "another tick is running"), "second tick skipped: " + JSON.stringify([a, b]));
   eq(TABLES.winston_trades.length, 1, "only one trade opened");
   const l = TABLES.winston_settings.find((s) => s.key === "tick_lock"); assert(l.value.until < new RealDate(NOW).toISOString() || true, "lock released after the tick");
+});
+Deno.test("v5.5.1: a tick waits out a short lock holder (the watch) and runs; a long holder (another tick) still makes it skip", async () => {
+  seed(); setNow("2026-10-14T14:11:00Z"); await setupCall();
+  // the watch holds the lock for ~5 s: the tick must wait, then run and trade
+  TABLES.winston_settings.push({ key: "tick_lock", value: { until: new RealDate(NOW + 5e3).toISOString() } });
+  const t0 = NOW; const r = await X.tick();
+  assert(!r.skipped, "tick ran after waiting: " + JSON.stringify(r)); assert(NOW - t0 >= 3e3 && NOW - t0 <= 12e3, "waited a few seconds: " + (NOW - t0));
+  eq(TABLES.winston_trades.length, 1, "the waited tick still traded");
+  // a holder for 4 minutes (a real second tick): give up after ~45 s, log it, trade nothing more
+  seed(); setNow("2026-10-14T14:11:00Z"); await setupCall();
+  TABLES.winston_settings.push({ key: "tick_lock", value: { until: new RealDate(NOW + 4 * 60e3).toISOString() } });
+  const t1 = NOW; const s = await X.tick();
+  eq(s.skipped, "another tick is running", "long holder = skip"); assert(NOW - t1 >= 40e3 && NOW - t1 <= 50e3, "gave up after ~45 s: " + (NOW - t1));
+  assert(s.waited_ms >= 40e3, "reports how long it waited"); eq(TABLES.winston_trades.length, 0, "nothing traded");
+});
+Deno.test("v5.6 LC (pure): the loss cap moves the stop and the wrong-if with it; the tighter of $ and % wins; no delta / no room = skip", async () => {
+  const cfg = { max_loss_usd: 100, max_loss_pct_premium: 35 };
+  const r0 = X.riskEstimate(2.5, 0.35, 200, 190);                       // planned loss $250 on a $250 premium
+  const c = X.lossCap(2.5, r0, 0.35, 200, "call", 190, cfg) as any;
+  assert(c.capped, "capped"); eq(c.planned_loss, 87.5, "35% of $250 beats the $100 cap"); eq(c.stop_option, 1.63, "stop = fill - cap"); eq(c.wrong_if, 197.51, "wrong-if moved to 2.49 points");
+  const p = X.lossCap(2.5, r0, 0.35, 200, "put", 210, cfg) as any; eq(p.wrong_if, 202.49, "a put's wrong-if moves up");
+  const u = X.lossCap(5, X.riskEstimate(5, 0.5, 200, 190), 0.5, 200, "call", 190, cfg) as any; eq(u.planned_loss, 100, "the $100 cap beats 35% of $500");
+  eq(X.lossCap(2.5, X.riskEstimate(2.5, 0.35, 200, 198), 0.35, 200, "call", 198, cfg).capped, false, "$70 is under both caps: untouched");
+  eq(X.lossCap(2.5, r0, 0.35, 200, "call", 190, { max_loss_usd: 0, max_loss_pct_premium: 0 }).capped, false, "both caps off = untouched");
+  assert((X.lossCap(2.5, r0, 0, 200, "call", 190, cfg) as any).skip, "no delta = skip");
+  assert((X.lossCap(2.5, r0, 9, 200, "call", 190, cfg) as any).skip, "a huge delta leaves the wrong-if too close = skip");
+});
+Deno.test("v5.6 LC (tick): a wrong-if 10 points away on a $2.50 option is capped at the fill — the plan carries the moved wrong-if, the original, the delta and an LC stamp", async () => {
+  seed(); setNow("2026-10-14T14:11:00Z"); await setupCall();
+  aiScript = () => ({ decisions: [{ ticker: "NVDA", side: "call", source: "coach:1", thesis: "Coach call: long over 200", wrong_if_level: 190, target_level: 212, time_exit_min: 120, trigger_level: 200,
+    cites: [{ type: "coach_post", ref: "1" }, { type: "rule", ref: "W2" }], rule_ids: ["W2"] }], passes: [] });
+  await X.tick();
+  eq(TABLES.winston_trades.length, 1, "traded: " + JSON.stringify(TABLES.winston_ideas.map((i: any) => i.status + " " + i.reason))); const p = TABLES.winston_trades[0].plan;
+  eq(p.planned_loss, 87.5, "planned loss capped"); eq(p.stop_option, 1.63, "stop moved"); eq(p.wrong_if_level, 197.51, "wrong-if moved"); eq(p.wrong_if_orig, 190, "the AI's wrong-if kept");
+  eq(p.delta, 0.35, "delta stored (the v3.42 comment bug)"); assert(p.stamps.some((s: string) => s.startsWith("LC:")), "LC stamp: " + JSON.stringify(p.stamps));
+  // the moved wrong-if is what the exit engine uses: a 10-minute close under 197.51 exits
+  setNow("2026-10-14T14:31:00Z"); W.bars.NVDA.push(barRow("2026-10-14T14:20:00Z", 199, 199.5, 196.5, 197)); W.opts.opt1.bid = 1.5; W.opts.opt1.ask = 1.6; aiScript = null;
+  await X.tick(); eq(TABLES.winston_trades[0].status, "closed", "closed"); eq(TABLES.winston_trades[0].exit_reason, "wrong_if", "on the moved wrong-if");
+  // the cap is a setting: raise it and the same plan goes through untouched
+  seed(); setNow("2026-10-14T14:11:00Z"); await setupCall(); TABLES.winston_settings.find((s) => s.key === "config").value.max_loss_usd = 500; TABLES.winston_settings.find((s) => s.key === "config").value.max_loss_pct_premium = 100;
+  aiScript = () => ({ decisions: [{ ticker: "NVDA", side: "call", source: "coach:1", thesis: "Coach call: long over 200", wrong_if_level: 190, target_level: 212, time_exit_min: 120, trigger_level: 200,
+    cites: [{ type: "coach_post", ref: "1" }, { type: "rule", ref: "W2" }], rule_ids: ["W2"] }], passes: [] });
+  await X.tick(); eq(TABLES.winston_trades[0].plan.wrong_if_level, 190, "caps raised = the AI's wrong-if stands"); eq(TABLES.winston_trades[0].plan.planned_loss, 249, "full planned loss (stop floor $0.01)");
+});
+Deno.test("v5.6: the brain is a setting — opus by default, sonnet on config_set {model:'sonnet'}, anything else refused; the loss cap is settable with ranges", async () => {
+  seed(); eq(await X.currentModel(), "claude-opus-5-5", "default opus");
+  const r = await X.setEnabled({ model: "sonnet" }); eq(r.model, "sonnet", "set"); eq(await X.currentModel(), "claude-sonnet-4-6", "sonnet now");
+  await X.setEnabled({ model: "opus" }); eq(await X.currentModel(), "claude-opus-5-5", "back to opus");
+  let threw = false; try { await X.setEnabled({ model: "haiku" }); } catch { threw = true; } assert(threw, "haiku refused");
+  const c = await X.setEnabled({ max_loss_usd: 150, max_loss_pct_premium: 40 }); eq([c.max_loss_usd, c.max_loss_pct_premium], [150, 40], "cap set");
+  threw = false; try { await X.setEnabled({ max_loss_usd: 5 }); } catch { threw = true; } assert(threw, "$5 refused");
+  eq((await X.getConfig()).max_loss_usd, 150, "persisted");
 });
 Deno.test("replay 8: one position at a time and no adding; the size cap skips (never shrinks); cash is tracked", async () => {
   seed(); setNow("2026-10-14T14:11:00Z"); await setupCall();

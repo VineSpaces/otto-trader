@@ -14,6 +14,12 @@
 const T: any = (globalThis as any).__WINSTON_TEST__ || null;
 const MODEL = "claude-opus-5-5";   // v5.3 (Ifoma, 3 Nov): Winston runs on Opus. v5.3.1: Opus 5.5 refuses a FORCED tool choice, so it is asked with the tool offered and a plain instruction; any failure falls back to Sonnet 4.6 (see aiJson).
 const FALLBACK_MODEL = "claude-sonnet-4-6";   // the one model known to accept tool_choice {type:"tool"}
+// v5.6 (Ifoma, 6 Nov): the brain is a SETTING — config.model = "opus" | "sonnet" (`config_set {model:"sonnet"}` or the Brain button on the tab), no deploy.
+export const MODELS: Record<string, string> = { opus: "claude-opus-5-5", sonnet: "claude-sonnet-4-6" };
+export async function currentModel(): Promise<string> {
+  const cfg = await getConfig().catch(() => null);
+  return MODELS[String(cfg?.model || "")] || MODEL;
+}
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -120,7 +126,8 @@ export function etToUtcMs(date: string, min: number): number {
 // gates (W3 same ticker, W12-W15, W20-W23) STAMP the trade instead of blocking it, the contract picker has a loose third tier, the time
 // exit has a floor, and limits_override lets Winston drop the live daily stop without touching Josh's limits. mode "strict" = v3.31 behaviour.
 export const CONFIG_DEFAULTS: any = { enabled: true, paper_balance: 4000, own_idea_from_min: 600, coach_idea_from_min: 571,
-  spread_cap_pct: 1, min_contract_price: 1, coach_chase_pct: 0.5,   // v5.3: spread in dollars ≤ 1% of the book; no contract under $1.00; a coach level more than 0.5% behind price is a chase
+  spread_cap_pct: 1, min_contract_price: 1, coach_chase_pct: 0.5,   // v5.3
+  model: "opus", max_loss_usd: 100, max_loss_pct_premium: 35,   // v5.6: the brain switch; the loss cap per trade (dollars AND share of the premium — the tighter one wins): spread in dollars ≤ 1% of the book; no contract under $1.00; a coach level more than 0.5% behind price is a chase
  
   last_entry_min: 930, default_time_exit_min: 180, flat_min: 950, max_open: 1, mode: "strict", min_time_exit_min: 0, limits_override: {},
   universe: ["SPY", "QQQ", "NVDA", "TSLA", "AAPL", "MSFT", "META", "AMZN", "GOOGL", "AMD", "PLTR", "MU"] };
@@ -305,6 +312,24 @@ export function planProblem(d: Decision, spot: number): string | null {
 export function riskEstimate(ask: number, delta: number, spot: number, wrongIf: number) {
   const est = Math.max(0.01, round2(ask - Math.abs(delta) * Math.abs(spot - wrongIf)));
   return { stop_option: est, planned_loss: round2(Math.min(ask, ask - est) * 100) };
+}
+/* v5.6 LC — the loss cap (6 Nov 2026). The deep dive on 59 trades: when Winston won (14–22 Oct) his planned loss averaged $92 = 28% of the premium and 9 of 26
+   trades reached the target; by 3–5 Nov the planned loss was $167 = 52% of the premium (AMZN's wrong-if 2.5% away, META's 1.4%, SPY's $0.09 stop on a $2.99
+   option), 0 of 10 reached the target, losers ran to the full wrong-if and winners were cut early. The AI still names the wrong-if; the code caps what it may
+   cost: the tighter of `max_loss_usd` and `max_loss_pct_premium` × the premium. Over the cap → the option stop moves up to the cap and the wrong-if level
+   moves with it (delta), the original is kept as wrong_if_orig and the trade is stamped LC. No delta, or no room left → passed with an LC shadow. */
+export function lossCap(fill: number, risk: { stop_option: number; planned_loss: number }, delta: number, spot: number, side: "call" | "put", wrongIf: number, cfg: any):
+  { capped: false; skip?: false } | { capped: false; skip: true; why: string } | { capped: true; skip?: false; stop_option: number; planned_loss: number; wrong_if: number; note: string } {
+  const usd = num(cfg?.max_loss_usd), pct = num(cfg?.max_loss_pct_premium);
+  const cap = Math.min(usd > 0 ? usd : Infinity, pct > 0 ? round2(fill * pct) : Infinity);   // fill × 100 × pct / 100
+  if (!isFinite(cap) || !(risk.planned_loss > cap)) return { capped: false };
+  const dl = Math.abs(num(delta));
+  if (!(dl > 0)) return { capped: false, skip: true, why: `planned loss $${risk.planned_loss} is over the $${cap} cap and the delta is unknown, so the stop cannot be moved` };
+  const stop = round2(fill - cap / 100);
+  if (!(stop >= 0.05)) return { capped: false, skip: true, why: `planned loss $${risk.planned_loss} is over the $${cap} cap and the premium leaves no room for a stop` };
+  const dist = (fill - stop) / dl, wi = round2(side === "call" ? spot - dist : spot + dist);
+  if (!(wi > 0) || Math.abs(spot - wi) / spot < 0.0005) return { capped: false, skip: true, why: `the $${cap} cap puts the wrong-if at ${wi}, too close to ${spot} to mean anything` };
+  return { capped: true, stop_option: stop, planned_loss: cap, wrong_if: wi, note: `LC: planned loss $${risk.planned_loss} capped to $${cap} — wrong-if ${wrongIf} → ${wi}, stop $${stop}` };
 }
 
 export type Equity = { equity: number; cash: number; day_pnl: number; day_losses: number; week_pnl: number; week_start_equity: number };
@@ -661,6 +686,18 @@ async function takeLock(name: string, ms: number): Promise<boolean> {
     method: "PATCH", body: JSON.stringify({ value: { until }, updated_at: nowDate().toISOString() }) });
   return Array.isArray(got) && got.length === 1;
 }
+// v5.5.1 (6 Nov 2026): the every-minute watch shares this lock while a trade is open, and when the watch and the 10-minute tick land in the same
+// second the tick lost the lock and skipped the whole candle ("another tick is running" — seen 10:51 AM 6 Nov, and on earlier days). Now the tick
+// WAITS for the lock (a few seconds at a time, up to waitMs) instead of quitting; a genuinely long holder (a second tick) still makes it skip.
+const LOCK_STEP_MS = 3000;
+async function takeLockWait(name: string, ms: number, waitMs: number): Promise<{ ok: boolean; waited: number }> {
+  const t0 = nowMs();
+  for (;;) {
+    if (await takeLock(name, ms)) return { ok: true, waited: nowMs() - t0 };
+    if (nowMs() - t0 + LOCK_STEP_MS > waitMs) return { ok: false, waited: nowMs() - t0 };
+    if (T?.sleep) await T.sleep(LOCK_STEP_MS); else await new Promise((r) => setTimeout(r, LOCK_STEP_MS));
+  }
+}
 async function freeLock(name: string) { await db(`winston_settings?key=eq.${name}`, { method: "PATCH", headers: { prefer: "return=minimal" }, body: JSON.stringify({ value: { until: "1970-01-01T00:00:00.000Z" } }) }).catch(() => {}); }
 
 /* ------------------------------------------------------------------ AI */
@@ -703,10 +740,11 @@ export function mergeToolInputs(inputs: any[]): any {
 }
 export async function aiJson(system: string, user: string, tool: { name: string; description: string; input_schema: any }, maxTokens = 6000): Promise<{ out: any; usage: { input: number; output: number }; model?: string; meta?: { blocks: number; stop: string } }> {   // v5.4.1: 3000 → 6000 (one 3 Nov reply hit the cap)
   if (T?.ai) return T.ai({ system, user, tool });
-  try { return await aiAsk(MODEL, system, user, tool, maxTokens); }
+  const model = await currentModel();   // v5.6: read every call so a toggle takes effect on the next look
+  try { return await aiAsk(model, system, user, tool, maxTokens); }
   catch (e) {
-    if (MODEL === FALLBACK_MODEL) throw e;
-    await wlog("ai_fallback", { from: MODEL, to: FALLBACK_MODEL, tool: tool.name, msg: String((e as Error).message || e).slice(0, 200) });
+    if (model === FALLBACK_MODEL) throw e;
+    await wlog("ai_fallback", { from: model, to: FALLBACK_MODEL, tool: tool.name, msg: String((e as Error).message || e).slice(0, 200) });
     return await aiAsk(FALLBACK_MODEL, system, user, tool, maxTokens);
   }
 }
@@ -1011,7 +1049,11 @@ export async function tryOpen(ctx: Ctx, d: Decision, spot: number, coachCall: bo
   const ef = entryFill(q);
   if (!ef.ok) { await recordIdea(day, d, "blocked", "No fill: " + ef.why); return { opened: false, why: ef.why }; }
   const cost = round2(ef.fill * 100);
-  const risk = riskEstimate(ef.fill, q!.delta || row.delta, spot, d.wrong_if_level);
+  const wiOrig = d.wrong_if_level, dlt = q!.delta || row.delta;
+  let risk = riskEstimate(ef.fill, dlt, spot, d.wrong_if_level);
+  const lc = lossCap(ef.fill, risk, dlt, spot, d.side, wiOrig, cfg);   // v5.6 LC
+  if (lc.skip) { await recordIdea(day, d, "passed", "LC: " + lc.why); await bookShadow(day, d, spot, "LC", lc.why); return { opened: false, why: "LC: " + lc.why }; }
+  if (lc.capped) risk = { stop_option: lc.stop_option, planned_loss: lc.planned_loss };   // the gates see the capped risk; d.wrong_if_level moves only after they pass (a shadow keeps the AI's plan)
   // v3.36: the coach's 15 Oct reads. In data mode they stamp; in strict mode they block (when the rule is on).
   const closedToday = dayTrades.filter((t: any) => t.status === "closed");
   const citedId = d.source.startsWith("coach:") ? num(d.source.slice(6)) : 0;
@@ -1030,15 +1072,17 @@ export async function tryOpen(ctx: Ctx, d: Decision, spot: number, coachCall: bo
     trendAgainst: coachCall && v55.levelTrade !== false ? trendGateProblem(d.side, ctx.trends?.[d.ticker], biasOk) : null });
   const gate = hits.find((h) => !h.soft);
   if (gate) { await recordIdea(day, d, "blocked", `${gate.rule}: ${gate.why}`); await bookShadow(day, d, spot, gate.rule, gate.why); return { opened: false, why: gate.rule + ": " + gate.why }; }   // v4.5: the rule ledger
-  const atrNote = stopVsAtr(d.wrong_if_level, spot, ctx.dctx?.[d.ticker]?.atr14);                 // v4.4: stamp only, never blocks
-  const stamps = [...pick.flags, ...hits.filter((h) => h.soft).map((h) => `${h.rule}: ${h.why}`), ...(atrNote ? [`ATR: ${atrNote}`] : [])];
+  if (lc.capped) d.wrong_if_level = lc.wrong_if;                                                  // v5.6 LC: from here on the trade lives on the capped wrong-if
+  const atrNote = stopVsAtr(wiOrig, spot, ctx.dctx?.[d.ticker]?.atr14);                           // v4.4: stamp only, never blocks (measures the AI's wrong-if)
+  const stamps = [...pick.flags, ...hits.filter((h) => h.soft).map((h) => `${h.rule}: ${h.why}`), ...(atrNote ? [`ATR: ${atrNote}`] : []), ...(lc.capped ? [lc.note] : [])];
   const timeExit = Math.max(d.time_exit_min || num(cfg.default_time_exit_min) || 180, num(cfg.min_time_exit_min) || 0);
   const plan = { dir: d.side === "call" ? "up" : "down", wrong_if_level: d.wrong_if_level, target_level: d.target_level, time_exit_min: timeExit,
-    stop_option: risk.stop_option, planned_loss: risk.planned_loss, thesis: String(d.thesis || "").slice(0, 1500), picked_by: pick.by,   // v3.42: was 400 — too short to audit a fact stamp delta: q!.delta || row.delta,
+    stop_option: risk.stop_option, planned_loss: risk.planned_loss, thesis: String(d.thesis || "").slice(0, 1500), picked_by: pick.by,   // v3.42: was 400 — too short to audit a fact stamp
+    delta: dlt,   // v5.6: this line had been swallowed by the comment above since v3.42 — plan.delta was null, so every MFE/MAE/after-exit R read was blank
     contract: { exp: row.exp, strike: row.strike }, last_mark: { bid: ef.bid, ask: ef.ask, under: spot, at: new Date(nowMs()).toISOString() },
     mode: dataMode ? "data" : "strict", stamps, index: ctx.index ?? null, tape: ctx.tape ?? null, vwap_at_entry: ctx.vwaps?.[d.ticker] ?? null,
     spread_pct: ef.mid > 0 ? round2((ef.ask - ef.bid) / ef.mid * 100) : null,                     // v4.3: what the spread cost him at the fill
-    wrong_if_orig: d.wrong_if_level, trigger_level: num(d.trigger_level) > 0 ? num(d.trigger_level) : null,
+    wrong_if_orig: wiOrig, trigger_level: num(d.trigger_level) > 0 ? num(d.trigger_level) : null,   // v5.6: the AI's wrong-if before the LC cap
     v55: { day_bias: biasOk ? { dir: ctx.bias![d.ticker].dir, level: ctx.bias![d.ticker].level, name: ctx.bias![d.ticker].name } : null, event_with: evOk, trend: ctx.trends?.[d.ticker]?.trend || null } };   // v5.5: scored later   // v4.3: winner protection moves wrong_if; the original is kept
   const ideaId = await recordIdea(day, d, "taken", (stamps.length ? "[stamped: " + stamps.map((s) => s.split(":")[0]).join(", ") + "] " : "") + (d.thesis || "taken"), plan);
   const t = await db("winston_trades", { method: "POST", body: JSON.stringify({ day, opened_at: new Date(nowMs()).toISOString(), status: "open", ticker: d.ticker, side: d.side, option_id: row.id, label: row.label, qty: 1,
@@ -1745,7 +1789,8 @@ export async function tick(opts: { force?: boolean } = {}): Promise<any> {
   const c = marketClock();
   const prepNow = !opts.force && c.trading && c.status === "pre" && c.min >= 480 && cfg.prep_on === true && cfg.prep_day === c.date;   // v4.8.6: Ifoma's manual PREP switch (today only)
   if (!opts.force && !prepNow && !(c.status === "open" && c.min >= 571 && c.min <= c.closeMin - 1)) return { ok: true, skipped: "market not open", clock: c.status };
-  if (!(await takeLock("tick_lock", 4 * 60e3))) return { ok: true, skipped: "another tick is running" };
+  const lk = await takeLockWait("tick_lock", 4 * 60e3, 45e3);   // v5.5.1: wait out the watch instead of skipping the candle
+  if (!lk.ok) return { ok: true, skipped: "another tick is running", waited_ms: lk.waited };   // the cron handler logs this row
   try {
     const day = c.date;
     if (prepNow) { await beat("prep"); return await prepTick(cfg, c); }
@@ -2186,6 +2231,21 @@ export async function setEnabled(body: any) {
     await putSetting("config", { ...cfg, live_mode: m, live_since: m === "on" ? (cfg.live_since && cfg.live_mode === "on" ? cfg.live_since : marketClock().date) : null });
     await wlog("config", { live_mode: m });
     return { ok: true, live_mode: m, enabled: cfg.enabled };
+  }
+  if (body?.model != null) {   // v5.6: the brain switch
+    const m = String(body.model);
+    if (!MODELS[m]) throw new Error("model must be opus or sonnet");
+    await putSetting("config", { ...cfg, model: m });
+    await wlog("config", { model: m });
+    return { ok: true, model: m, enabled: cfg.enabled };
+  }
+  if (body?.max_loss_usd != null || body?.max_loss_pct_premium != null) {   // v5.6: the loss cap per trade
+    const next = { ...cfg };
+    if (body.max_loss_usd != null) { const n = Math.round(Number(body.max_loss_usd)); if (!(n >= 25 && n <= 500)) throw new Error("max_loss_usd must be 25 to 500"); next.max_loss_usd = n; }
+    if (body.max_loss_pct_premium != null) { const n = Math.round(Number(body.max_loss_pct_premium)); if (!(n >= 10 && n <= 100)) throw new Error("max_loss_pct_premium must be 10 to 100"); next.max_loss_pct_premium = n; }
+    await putSetting("config", next);
+    await wlog("config", { max_loss_usd: next.max_loss_usd, max_loss_pct_premium: next.max_loss_pct_premium });
+    return { ok: true, max_loss_usd: next.max_loss_usd, max_loss_pct_premium: next.max_loss_pct_premium, enabled: cfg.enabled };
   }
   if (body?.reconcile_ack != null) {
     const d = String(body.reconcile_ack).slice(0, 10);
