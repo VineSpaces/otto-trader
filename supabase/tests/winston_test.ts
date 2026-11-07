@@ -496,6 +496,7 @@ Deno.test("v5.6 LC (tick): a wrong-if 10 points away on a $2.50 option is capped
 Deno.test("v5.6: the brain is a setting — opus by default, sonnet on config_set {model:'sonnet'}, anything else refused; the loss cap is settable with ranges", async () => {
   seed(); eq(await X.currentModel(), "claude-opus-5-5", "default opus");
   const r = await X.setEnabled({ model: "sonnet" }); eq(r.model, "sonnet", "set"); eq(await X.currentModel(), "claude-sonnet-4-6", "sonnet now");
+  await X.setEnabled({ model: "sonnet55" }); eq(await X.currentModel(), "claude-sonnet-5-5", "sonnet 5.5 (v5.6.1)");
   await X.setEnabled({ model: "opus" }); eq(await X.currentModel(), "claude-opus-5-5", "back to opus");
   let threw = false; try { await X.setEnabled({ model: "haiku" }); } catch { threw = true; } assert(threw, "haiku refused");
   const c = await X.setEnabled({ max_loss_usd: 150, max_loss_pct_premium: 40 }); eq([c.max_loss_usd, c.max_loss_pct_premium], [150, 40], "cap set");

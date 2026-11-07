@@ -15,7 +15,7 @@ const T: any = (globalThis as any).__WINSTON_TEST__ || null;
 const MODEL = "claude-opus-5-5";   // v5.3 (Ifoma, 3 Nov): Winston runs on Opus. v5.3.1: Opus 5.5 refuses a FORCED tool choice, so it is asked with the tool offered and a plain instruction; any failure falls back to Sonnet 4.6 (see aiJson).
 const FALLBACK_MODEL = "claude-sonnet-4-6";   // the one model known to accept tool_choice {type:"tool"}
 // v5.6 (Ifoma, 6 Nov): the brain is a SETTING — config.model = "opus" | "sonnet" (`config_set {model:"sonnet"}` or the Brain button on the tab), no deploy.
-export const MODELS: Record<string, string> = { opus: "claude-opus-5-5", sonnet: "claude-sonnet-4-6" };
+export const MODELS: Record<string, string> = { opus: "claude-opus-5-5", sonnet55: "claude-sonnet-5-5", sonnet: "claude-sonnet-4-6" };   // v5.6.1: Sonnet 5.5 ($2/$10 vs Opus $4/$20); 4.6 stays the proven forced-tool fallback
 export async function currentModel(): Promise<string> {
   const cfg = await getConfig().catch(() => null);
   return MODELS[String(cfg?.model || "")] || MODEL;
@@ -2234,7 +2234,7 @@ export async function setEnabled(body: any) {
   }
   if (body?.model != null) {   // v5.6: the brain switch
     const m = String(body.model);
-    if (!MODELS[m]) throw new Error("model must be opus or sonnet");
+    if (!MODELS[m]) throw new Error("model must be opus, sonnet55 or sonnet");
     await putSetting("config", { ...cfg, model: m });
     await wlog("config", { model: m });
     return { ok: true, model: m, enabled: cfg.enabled };

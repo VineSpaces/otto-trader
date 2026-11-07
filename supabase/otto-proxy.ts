@@ -1621,7 +1621,7 @@ export function whyGate(why: any, kind: "approve" | "reject"): any {
 /* v3.35: a PRACTICE card (status paper_wait) is approved or rejected like a live one, but this function only writes to our own
    database. It has no call() to Robinhood for orders: the only Robinhood reads are a quote. The fill is the option's live ask
    at the tap; the idea is then graded from that moment (evalIdea). Approve never fails on a missing quote: it falls back to the card's price. */
-export async function practiceOn(a: any, decision: string, who: string, why: any = null) {
+export async function practiceOn(a: any, decision: string, who: string, why: any = null, opts: any = {}) {
   const id = a.id, now = new Date().toISOString();
   const left = (patch: any) => db("otto_actions?id=eq." + id + "&status=eq.paper_wait", { method: "PATCH", body: JSON.stringify(patch) });
   if (decision !== "approve") {
@@ -1629,7 +1629,10 @@ export async function practiceOn(a: any, decision: string, who: string, why: any
     if (r?.[0]) await activity("card", `Rejected (practice): ${a.title}`, who.split("@")[0]);
     return publicAction(r?.[0] || a);
   }
-  const why_ok = whyGate(why, "approve");     // v3.41: blocking — no why, no practice trade (throws before anything is written)
+  // v5.7 (6 Nov, Josh): with fill_now the fill is stamped at the TAP and the why comes right after (whyAttach). No why yet = why_pending,
+  // and a why_pending trade older than NO_WHY_MIN minutes counts as an override on the Scoreboard. Without fill_now the v3.41 gate is unchanged.
+  const fillNow = !!opts?.fill_now && why == null;
+  const why_ok = fillNow ? null : whyGate(why, "approve");     // v3.41: blocking — no why, no practice trade (throws before anything is written)
   if (Date.now() - Date.parse(a.created_at) > ACTION_TTL_MS) {
     const r = await left({ status: "expired", decided_by: who, decided_at: now });
     return publicAction(r?.[0] || a);
@@ -1648,21 +1651,59 @@ export async function practiceOn(a: any, decision: string, who: string, why: any
   const fill = { ask, delta, underlying: under, at: now, by: who, note: note.trim() || null };
   // v3.41: the v3.39 override tag applies to practice approvals too (the practice book's "Overrode Baby J" line reads it)
   const weakRead = overrideRead(a);                                          // v4.2.3: only a real No Edge / Choppy / chase flag counts as an override
-  const plan = { ...(a.plan || {}), paper_fill: fill, josh_why: why_ok, ...(weakRead ? { override: true, override_read: weakRead } : {}) };
+  const plan = { ...(a.plan || {}), paper_fill: fill, ...(why_ok ? { josh_why: why_ok, why_pending: false } : { why_pending: true }),
+    tp_check: tpCheck(a.plan, under), ...(weakRead ? { override: true, override_read: weakRead } : {}) };
   const r = await left({ status: "paper_taken", decided_by: who, decided_at: now, plan, outcome: null });
   if (!r?.[0]) return publicAction((await db("otto_actions?id=eq." + id + "&select=*"))[0] || a);
   await activity("card", `Approved (practice): ${a.title}. Pretend fill ${ask != null ? "$" + ask.toFixed(2) : "unknown"} by ${who.split("@")[0]}`, who.split("@")[0]);
-  await logDesk("system", "Otto", `✅ Practice trade taken: ${a.title}. Pretend fill ${ask != null ? "$" + ask.toFixed(2) + " (ask)" : "at the card's price"}, approved by ${who}. Why: "${why_ok.setup.slice(0, 120)}" · Kills it: ${why_ok.kills.slice(0, 80)}. ${note}Nothing was sent to Robinhood. It is scored from this moment on the practice book.`, id);
+  await logDesk("system", "Otto", `✅ Practice trade taken: ${a.title}. Pretend fill ${ask != null ? "$" + ask.toFixed(2) + " (ask)" : "at the card's price"}${under != null ? ` (${tk} ${under})` : ""}, approved by ${who}${fillNow ? " at the tap" : ""}. ${why_ok ? `Why: "${why_ok.setup.slice(0, 120)}" · Kills it: ${why_ok.kills.slice(0, 80)}. ` : "Why: not answered yet. "}${plan.tp_check?.close ? `⚠ The card's target ${a.plan?.tp1} is only $${plan.tp_check.dist} from this fill. ` : ""}${note}Nothing was sent to Robinhood. It is scored from this moment on the practice book.`, id);
   if (weakRead) await logDesk("assistant", "Jarvis", `Noted. I called this one weak — "${weakRead}". Logging it as an override by ${who.split("@")[0]}. The scoreboard keeps count.`, id);
   return publicAction(r[0]);
 }
 
-async function actOn(id: string, decision: string, who: string, why: any = null) {
+/* v5.7 (6 Nov 2026, Josh's ask: "enter me when I press the button, not after my why — but still make me answer").
+   tpCheck: after the fill, is the card's TP1 already within TP_CLOSE_PCT of the fill (or passed)? The MU 695P on 6 Nov: card built at
+   707.51 with TP1 700, filled 56 s later at 701.19 → the rule exit fired for +$52 on a trade Josh meant to ride to 683. The why dialog
+   then offers his own target. Only plan.tp1 moves (evalIdea grades practice cards from plan.tp1); exit.tp1 moves with it. */
+export const TP_CLOSE_PCT = 0.5, NO_WHY_MIN = 5, NO_WHY_TEXT = "Approved without a why";
+export function tpCheck(plan: any, under: number | null): any {
+  const tp = Number(plan?.tp1), u = Number(under);
+  if (!(tp > 0) || !(u > 0) || !plan?.direction) return null;
+  const dist = plan.direction === "down" ? u - tp : tp - u;             // room left to the target, negative = already passed
+  const close = dist <= u * TP_CLOSE_PCT / 100;
+  return { close, dist: Math.round(dist * 100) / 100, pct: Math.round(dist / u * 10000) / 100, tp1: tp, under: u };
+}
+export function noWhy(a: any, now = Date.now()): boolean {
+  const p = a?.plan || {};
+  if (a?.status !== "paper_taken" || !p.why_pending || p.josh_why) return false;
+  const at = Date.parse(p.paper_fill?.at || a.decided_at || "");
+  return isFinite(at) && now - at >= NO_WHY_MIN * 60e3;
+}
+/* The second half of a fill-at-tap approve: Josh's three lines (and his own target, if he typed one) land on the already-taken card. */
+export async function whyAttach(id: string, who: string, why: any, tp1: any = null) {
+  if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("bad id");
+  const a = (await db("otto_actions?id=eq." + id + "&select=*"))?.[0];
+  if (!a) throw new Error("no such card");
+  if (a.status !== "paper_taken" || !a.plan?.why_pending || a.plan?.josh_why) return publicAction(a);   // nothing to attach: idempotent
+  const why_ok = whyGate(why, "approve");
+  const plan: any = { ...(a.plan || {}), josh_why: why_ok, why_pending: false };
+  const exit: any = { ...(a.exit || {}) };
+  const t = Number(tp1), old = Number(a.plan?.tp1);
+  let tpLine = "";
+  const u = Number(a.plan?.paper_fill?.underlying) || Number(a.plan?.entry_underlying) || 0;
+  const ok = t > 0 && isFinite(t) && t !== old && (!(u > 0) || !a.plan?.direction || (a.plan.direction === "down" ? t < u : t > u));
+  if (ok) { plan.tp1 = t; plan.tp1_card = old; plan.tp1_by = who; exit.tp1 = t; tpLine = ` Josh set his target: ${t} (the card said ${old}).`; }
+  const r = await db("otto_actions?id=eq." + id + "&status=eq.paper_taken", { method: "PATCH", body: JSON.stringify({ plan, ...(a.exit ? { exit } : {}) }) });
+  await logDesk("system", "Otto", `📝 Why for ${a.title}: "${why_ok.setup.slice(0, 120)}" · Kills it: ${why_ok.kills.slice(0, 80)}.${tpLine}`, id);
+  return publicAction(r?.[0] || { ...a, plan, exit });
+}
+
+async function actOn(id: string, decision: string, who: string, why: any = null, opts: any = {}) {
   if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error("bad id");
   const rows = await db("otto_actions?id=eq." + id + "&select=*");
   const a = rows && rows[0];
   if (!a) throw new Error("no such card");
-  if (a.status === "paper_wait") return practiceOn(a, decision, who, why);   // v3.35: never reaches the Robinhood code below
+  if (a.status === "paper_wait") return practiceOn(a, decision, who, why, opts);   // v3.35: never reaches the Robinhood code below
   if (a.status !== "pending") return publicAction(a);
   const now = new Date().toISOString();
   if (decision !== "approve") {
@@ -3580,7 +3621,8 @@ export function scoreRows(ideas: any[], pnlBy: Record<string, number>) {
     state: a.outcome?.state ?? null, est: a.outcome?.pnl_est ?? null, r: a.outcome?.r ?? null, est_no_contract: !!a.outcome?.est_no_contract,   // v4.2.3 fix 7
     pnl: pnlBy[a.id] ?? null, by: a.decided_by ?? null,
     // v3.41: the practice book, overrides and Josh's whys ride along for the Scoreboard and the report card
-    practice: isPracticeCard(a), override: !!a.plan?.override, override_read: a.plan?.override_read ?? null,
+    practice: isPracticeCard(a), override: !!a.plan?.override || noWhy(a), override_read: a.plan?.override_read ?? (noWhy(a) ? NO_WHY_TEXT : null),   // v5.7: no why = an override
+    why_pending: !!a.plan?.why_pending && !a.plan?.josh_why, tp1_card: a.plan?.tp1_card ?? null,
     why: a.plan?.josh_why ? { setup: a.plan.josh_why.setup, why_now: a.plan.josh_why.why_now, kills: a.plan.josh_why.kills } : null,
     why_not: a.plan?.josh_reject_why?.why_not ?? null, exit_why: a.plan?.josh_exit_why?.text ?? null,
     // v3.43: a practice trade Josh closed by hand, and what the rule would have done
@@ -5669,7 +5711,7 @@ export function practiceStats(acts: any[], book: { start: number; since: string 
   const answered = cards.filter((a: any) => a.status === "paper_taken" || a.status === "rejected");
   const expired = cards.filter((a: any) => a.status === "expired");
   const est = (a: any) => (a.outcome && ["win", "loss", "scratch"].includes(a.outcome.state) && a.outcome.pnl_est != null) ? Number(a.outcome.pnl_est) : 0;
-  const ov = cards.filter((a: any) => a.plan?.override && a.status === "paper_taken");
+  const ov = cards.filter((a: any) => (a.plan?.override || noWhy(a)) && a.status === "paper_taken");   // v5.7: a why left unanswered counts
   const ovScored = ov.filter((a: any) => a.outcome && ["win", "loss"].includes(a.outcome.state));
   const whys = answered.filter((a: any) => a.plan?.josh_why || a.plan?.josh_reject_why);
   return {
@@ -8390,7 +8432,8 @@ Deno.serve(async (req) => {
         const rk = await roomKey();                                                      // v5.0: NoKey → the catch below
         return await desk(req, who, rk.key);
       }
-      if (fn === "act") return json({ ok: true, action: await actOn(String(body.id || ""), String(body.decision || ""), who, body.decision === "approve" ? body.why : (body.why_not ?? body.why)) });
+      if (fn === "act" && body.why_only) return json({ ok: true, action: await whyAttach(String(body.id || ""), who, body.why, body.tp1 ?? null) });   // v5.7
+      if (fn === "act") return json({ ok: true, action: await actOn(String(body.id || ""), String(body.decision || ""), who, body.decision === "approve" ? body.why : (body.why_not ?? body.why), { fill_now: !!body.fill_now }) });
       if (fn === "why_out") return json(await whyOut(body, who));                                   // v3.41: the line after Close Now
       if (fn === "panel") return json(await panel());
       if (fn === "trade_live") return json(await tradeLiveAll());                                                             // v3.43: + open practice trades

@@ -2750,7 +2750,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.6.0";
+const BUILD="5.7.0";
 const ROUTINE=[
  {n:1,title:"The bond market",src:"The 10-year live, plus the official close",calls:[{k:"t10"}]},
  {n:2,title:"One currency pair",src:"USD / JPY, spot",calls:[{k:"jpy"}]},
@@ -3656,7 +3656,8 @@ function dkCard(a){
     ${stp}${og}<div class="dk-act-h"><b>${esc(a.title)}</b><span><span class="dk-tag ${tag}">${esc(label)}</span>${who}</span></div>
     ${pc?`<div class="dk-paper">${esc(String(pc.text).replace(/^AUTO-REJECTED · /,""))}</div><div class="mut" style="font-size:12px">Shown and scored. ${/kill switch/i.test(pc.text)?"The kill switch is the one reason a card can't be answered.":/size cap/i.test(pc.text)?'Your own ticket over the cap — <a href="#" data-openlim="1">change the cap in Settings</a>.':"This one can't be answered for the reason above."}</div>`:""}
     ${prx?`<div class="dk-prac">${esc(prx.text)}<br><span class="mut">If you approve, the pretend fill is the option's asking price at the moment you tap. Nothing is sent to Robinhood. It only counts in the score if you approve it.</span></div>`:""}
-    ${pf?`<div class="dk-prac ok">Josh approved it${pf.at?" at "+dkTime(pf.at):""}. Pretend fill ${pf.ask!=null?"<b>$"+(+pf.ask).toFixed(2)+"</b> (ask)":"at the card's price"}. Scored from that moment; exits are the card's own rules (wrong-if, TP1, 3:50 PM). ${pf.note?esc(pf.note):""}</div>`:""}
+    ${pf?`<div class="dk-prac ok">Josh approved it${pf.at?" at "+dkTime(pf.at):""}. Pretend fill ${pf.ask!=null?"<b>$"+(+pf.ask).toFixed(2)+"</b> (ask)":"at the card's price"}${pf.underlying?" · "+esc(String(a.plan.tv_symbol||"").split(":").pop()||"")+" "+pf.underlying:""}. Scored from that moment; exits are the card's own rules (wrong-if, TP1${a.plan.tp1_card!=null?" — <b>Josh's target "+esc(String(a.plan.tp1))+"</b>, the card said "+esc(String(a.plan.tp1_card)):""}, 3:50 PM). ${pf.note?esc(pf.note):""}</div>`:""}
+    ${pf&&a.plan.why_pending&&!a.plan.josh_why?`<div class="dk-warnbox">⚠ <b>No why yet.</b> You are in; the trade counts either way. After 5 minutes it is scored as an override. <button class="dk-btn go" data-why="1" style="margin-left:8px">Answer your why</button></div>`:""}
     ${dkGuard(a)}
     ${a.summary?`<pre class="dk-sum">${esc(a.summary)}</pre>`:""}
     ${risk}
@@ -3714,16 +3715,16 @@ function whyAsk(kind,ctx){
   const dl=$("#dlgGate");if(!dl)return Promise.resolve(null);
   if(WHY_PENDING){try{WHY_PENDING.resolve(null)}catch(e){}}
   const a=ctx&&ctx.card||{},wrong=a.plan&&(a.plan.wrong_if_text||(a.plan.stop!=null?`${String(a.plan.tv_symbol||"").split(":").pop()||""} ${a.plan.wrong_tf||5}-min close ${a.plan.direction==="down"?"over":"under"} ${a.plan.stop}`.trim():""))||"";
-  const T={approve:["Before it counts — your why","Three lines. The report card reads these, not the P&L."],reject:["Reject — why not?","One line. \"Not now\" is not a why."],out:["Closed — why out?","One line. It goes on the Scoreboard and the Friday report card."]}[kind];
-  $("#whyTitle").textContent=T[0];$("#whyStamp").textContent=kind==="out"&&ctx.fill?`filled $${(+ctx.fill).toFixed(2)}`:"";
+  const T={approve:ctx&&ctx.fill?["Filled — now your why","You are in. Three lines before you look away; the report card reads these, not the P&L."]:["Before it counts — your why","Three lines. The report card reads these, not the P&L."],reject:["Reject — why not?","One line. \"Not now\" is not a why."],out:["Closed — why out?","One line. It goes on the Scoreboard and the Friday report card."]}[kind];
+  $("#whyTitle").textContent=T[0];$("#whyStamp").textContent=ctx.fill?`filled $${(+ctx.fill).toFixed(2)}${ctx.under?" · "+ctx.under:""}${ctx.at?" · "+dkTime(ctx.at):""}`:"";
   const f=(id,label,hint,val,multi)=>`<label for="${id}"><b>${label}</b>${hint?" — "+hint:""}</label>${multi?`<textarea id="${id}" rows="2">${esc(val||"")}</textarea>`:`<input id="${id}" value="${esc(val||"")}">`}<div class="cnt" data-for="${id}">0</div>`;
   const chips=(k)=>(WHY_CHIPS[k]||[]).map(c=>`<span class="chip" data-chip="${esc(c)}">${esc(c)}</span>`).join("");
   $("#whyBody").innerHTML=`<p class="why-hint">${T[1]} ${WHY_MIN} characters minimum.</p>${a.title?`<div class="why-card"><b>${esc(sbTitle?sbTitle(a.title):a.title)}</b></div>`:""}`+
-    (kind==="approve"?f("whySetup","1. The setup, in your words","what is this trade?","",true)+f("whyNow","2. Why now","why this bar and not the next one?","",true)+f("whyKills","3. What kills it","pre-filled from the card's wrong-if; edit if yours is different",wrong,false)
+    (kind==="approve"?f("whySetup","1. The setup, in your words","what is this trade?","",true)+f("whyNow","2. Why now","why this bar and not the next one?","",true)+f("whyKills","3. What kills it","pre-filled from the card's wrong-if; edit if yours is different",wrong,false)+(ctx.tp&&ctx.tp.close?`<label for="whyTp" class="why-tp"><b>4. Your target</b> — the card's target ${esc(String(ctx.tp.tp1))} is ${ctx.tp.dist<0?"already passed":"only $"+Math.abs(ctx.tp.dist).toFixed(2)+" from your fill"}. Keep it, or type the price you are riding to:</label><input id="whyTp" data-nomin="1" inputmode="decimal" value="${esc(String(ctx.tp.tp1))}">`:"")
     :kind==="reject"?f("whyNot","Why not?","", "",true)+`<div class="chips">${chips("reject")}</div>`
     :f("whyOut","Why out?","", "",true)+`<div class="chips">${chips("out")}</div>`);
-  $("#whyGo").textContent=kind==="approve"?(a.status==="paper_wait"?"Approve — practice fill at the ask":"Approve — place it"):kind==="reject"?"Reject with this why":"Save";
-  const fields=[...$("#whyBody").querySelectorAll("textarea,input")];
+  $("#whyGo").textContent=kind==="approve"?(ctx.fill?"Save my why":a.status==="paper_wait"?"Approve — practice fill at the ask":"Approve — place it"):kind==="reject"?"Reject with this why":"Save";
+  const fields=[...$("#whyBody").querySelectorAll("textarea,input")].filter(el=>!el.dataset.nomin);
   const check=()=>{let ok=true;fields.forEach(el=>{const n=el.value.trim().length,c=$("#whyBody").querySelector(`[data-for="${el.id}"]`);if(c){c.textContent=n+(n>=WHY_MIN?" ✓":" / "+WHY_MIN);c.classList.toggle("ok",n>=WHY_MIN)}if(n<WHY_MIN)ok=false});$("#whyGo").disabled=!ok};
   fields.forEach(el=>el.addEventListener("input",check));
   $("#whyBody").querySelectorAll("[data-chip]").forEach(c=>c.addEventListener("click",()=>{const el=fields[0];el.value=(el.value.trim()?el.value.trim()+" — ":"")+c.dataset.chip;el.focus();check()}));
@@ -3732,16 +3733,26 @@ function whyAsk(kind,ctx){
     WHY_PENDING={resolve};
     const done=v=>{if(WHY_PENDING&&WHY_PENDING.resolve===resolve)WHY_PENDING=null;try{dl.close()}catch(e){}resolve(v)};
     $("#whyGo").onclick=()=>{const g=o=>String(($("#"+o)||{}).value||"").trim();
-      done(kind==="approve"?{setup:g("whySetup"),why_now:g("whyNow"),kills:g("whyKills")}:kind==="reject"?g("whyNot"):g("whyOut"))};
+      done(kind==="approve"?{setup:g("whySetup"),why_now:g("whyNow"),kills:g("whyKills"),...($("#whyTp")?{tp1:g("whyTp")}:{})}:kind==="reject"?g("whyNot"):g("whyOut"))};
     $("#whyX").onclick=()=>done(null);
     dl.oncancel=ev=>{ev.preventDefault();if(kind!=="out")done(null);else toast("Say why you got out — one line")};
     dl.showModal();setTimeout(()=>fields[0]&&fields[0].focus(),50);
   });
 }
+// v5.7: the why after a fill-at-tap approve. Closing the box leaves the trade open with a red "no why" badge (it counts as an override after 5 minutes).
+async function dkWhyAttach(a){
+  const pf=a.plan&&a.plan.paper_fill||{},tp=a.plan&&a.plan.tp_check||null;
+  const why=await whyAsk("approve",{card:a,fill:pf.ask,under:pf.underlying,at:pf.at,tp});
+  if(why==null){toast("You are in. The trade counts — answer your why on the card.");return}
+  try{const j=await dkApi("act",{id:a.id,why_only:true,why,tp1:why.tp1||null});DK.acts[a.id]=j.action;toast(j.action.plan&&j.action.plan.tp1_card!=null&&j.action.plan.tp1!==j.action.plan.tp1_card?"Saved — your target is "+j.action.plan.tp1:"Why saved")}
+  catch(err){toast(String(err.message).slice(0,100))}
+  dkRenderMsgs();dkRenderRight();sgRender();
+}
 async function dkCardClick(e){
   if(e.target.closest("[data-openlim]")){e.preventDefault();openLimits();return}
   const card=e.target.closest("[data-act]");if(!card)return;
   const a=DK.acts[card.dataset.act];if(!a)return;
+  if(e.target.closest("[data-why]")){e.preventDefault();await dkWhyAttach(a);return}
   if(e.target.closest("[data-jason]")){
     const t=`Coach — quick look before I take this?\n${a.title}\n${a.summary||""}`.trim();
     try{await navigator.clipboard.writeText(t);toast("Copied — paste it to your coach")}catch(err){prompt("Copy this to your coach:",t)}
@@ -3756,6 +3767,12 @@ async function dkCardClick(e){
   // a live card that wasn't an opening option order sent Reject with no why, the server refused, and the card expired.
   let why=null;
   const waiting=a.status==="pending"||a.status==="paper_wait";
+  // v5.7 (Josh, 6 Nov): a PRACTICE approve fills at the tap, then asks the why. The fill no longer waits on the typing.
+  if(ok&&a.status==="paper_wait"){card.querySelectorAll("button").forEach(b=>b.disabled=true);let j;
+    try{j=await dkApi("act",{id:a.id,decision:"approve",fill_now:true});DK.acts[a.id]=j.action}catch(err){toast(String(err.message).slice(0,100));dkRenderMsgs();dkRenderRight();return}
+    dkRenderMsgs();dkRenderRight();sgRender();
+    if(j.action.status==="paper_taken"){toast("Filled — practice trade taken at the ask");await dkWhyAttach(j.action)}else toast(j.action.status==="expired"?"Too late — the card expired":j.action.status);
+    dkPoll();dkPanel(true);return}
   if(no&&waiting){why=await whyAsk("reject",{card:a});if(why==null)return}
   else if(ok&&opening){why=await whyAsk("approve",{card:a});if(why==null)return}
   if(ok&&order&&a.status!=="paper_wait"&&!confirm(`Place this with real money?\n\n${a.title}${a.risk&&a.risk.flag?"\n\n⚠ Over your 20% flag.":""}`))return;
@@ -4377,7 +4394,7 @@ function sbList(m,d){
       const o=u==null?"o":u>0?"w":u<0?"l":"f",lab=u==null?(real?"OPEN":"SCORING"):u>0?"WIN":u<0?"LOSS":"FLAT";
       const w=x.r.why,wl=w?`Why: ${esc(w.setup||"")}${w.kills?" · Kills: "+esc(w.kills):""}`:"",xl=x.r.exit_why?` · Out: ${esc(x.r.exit_why)}`:"",hc=x.r.hand_close?` · <b>${esc(typeof x.r.hand_close==="string"?x.r.hand_close:"Josh")} closed it</b>${x.r.rule_state?` · what-if if the rules had run it: ${esc(String(x.r.rule_state).toUpperCase())}${x.r.rule_est!=null?" "+sbM(sbN(x.r.rule_est),true):""}`:" · what-if: still scoring"}`:"";
       return `<div class="sb-li" style="flex-wrap:wrap">${chip(o,lab)}<div class="t"><b>${esc(sbTitle(x.r.title))}</b>${x.r.override?`<span class="sb-ov" title="${esc(x.r.override_read||"")}">Overrode Baby J</span>`:""}<span>${esc(winET(x.r.at))} · ${esc(x.r.source||"desk")}${real?" · <b style='color:var(--warn)'>REAL MONEY</b>":""}</span></div>
-        <div class="amt ${sbC(u)}">${u==null?"—":sbM(u,true)}${u!=null&&!real?`<span class="run">running ${sbM(run,true)}</span>`:""}</div>${wl||xl||hc?`<div class="sb-why">${wl}${xl}${hc}</div>`:x.r.practice?`<div class="sb-why mut">No why recorded (before the why gate).</div>`:""}</div>`}).reverse();
+        <div class="amt ${sbC(u)}">${u==null?"—":sbM(u,true)}${u!=null&&!real?`<span class="run">day so far ${sbM(run,true)}</span>`:""}</div>${wl||xl||hc?`<div class="sb-why">${wl}${xl}${hc}</div>`:x.r.practice?`<div class="sb-why mut">No why recorded (before the why gate).</div>`:""}</div>`}).reverse();
     html=items.join("")||`<div class="sb-note">No Josh + Baby J trades on this day.</div>`;
     if(day.X.length)html+=`<details class="sb-nt"><summary>Not taken (${day.X.length}): rejected, expired or auto-rejected cards, never opened, not in any total</summary>${day.X.slice().sort((a,b)=>String(b.r.at).localeCompare(String(a.r.at))).map(x=>
       `<div class="sb-li notaken" style="flex-wrap:wrap">${chip("x","NOT TAKEN")}<div class="t"><b>${esc(sbTitle(x.r.title))}</b>${x.r.status==="expired"&&x.r.practice?`<span class="sb-ov">no answer</span>`:""}<span>${esc(winET(x.r.at))} · ${esc(x.r.source||"desk")} · ${esc(x.r.status==="paper_wait"?"not answered":x.r.status==="paper"?"auto-rejected":x.r.status)}</span></div><div class="amt mut" style="text-decoration:line-through;font-size:16px">${x.usd==null?"":sbM(x.usd)}</div>${x.r.why_not?`<div class="sb-why">Why not: ${esc(x.r.why_not)}</div>`:x.r.status==="expired"&&x.r.practice?`<div class="sb-why">No why — counts as unanswered on Friday.</div>`:""}</div>`).join("")}</details>`;
@@ -4387,7 +4404,7 @@ function sbList(m,d){
     html=rows.map(x=>{const t=x.t,u=x.usd;if(u!=null)run+=u;
       const o=x.open?"o":u>0?"w":u<0?"l":"f",lab=x.open?"OPEN":u>0?"WIN":u<0?"LOSS":"FLAT";
       return `<div class="sb-li">${chip(o,lab)}<div class="t"><b>${esc(t.label||t.ticker)}</b><span>${esc(winET(t.opened_at))}${x.open?" · still open":" → "+esc(winET(t.closed_at))+" · "+esc(WIN_WHY[t.exit_reason]||t.exit_reason||"")} · ${esc(winSrc(t.source))}</span></div>
-        <div class="amt ${sbC(u)}">${u==null?"—":sbM(u,true)}${u!=null?`<span class="run">running ${sbM(run,true)}</span>`:""}</div></div>`}).reverse().join("")||`<div class="sb-note">${SB.werr?"Winston's numbers are unavailable right now: "+esc(SB.werr):"No Winston trades on this day."}</div>`;
+        <div class="amt ${sbC(u)}">${u==null?"—":sbM(u,true)}${u!=null?`<span class="run">day so far ${sbM(run,true)}</span>`:""}</div></div>`}).reverse().join("")||`<div class="sb-note">${SB.werr?"Winston's numbers are unavailable right now: "+esc(SB.werr):"No Winston trades on this day."}</div>`;
   }
   return html;
 }
