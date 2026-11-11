@@ -2651,8 +2651,12 @@ Deno.test("v5.9 OttoPilot never touches: a card Baby J flagged weak, a LIVE card
   await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
   const weak: any = spyCard(); weak.plan = { ...weak.plan, weak: "This is a chase — the bar already ran past the level." };
   const w: any = await M.proposeAction(weak, "watcher");
-  assert(w.status === "paper_wait" && !w.plan.autopilot, "weak card is left for Josh: " + w.status);
-  assert(T.otto_desk.some((d: any) => /OttoPilot left this one for Josh/.test(d.content) && /chase/.test(d.content)), "and it says why");
+  assert(w.status === "rejected" && w.decided_by === "autopilot" && !w.plan.autopilot && !w.plan.paper_fill && /chase/.test(w.plan.autopilot_pass.why) && !w.plan.josh_reject_why, "weak card is PASSED by OttoPilot, never taken, never Josh's reject: " + w.status + " " + JSON.stringify(w.plan.autopilot_pass));
+  assert(T.otto_desk.some((d: any) => /OttoPilot passed on this one/.test(d.content) && /chase/.test(d.content) && /does not count as a card Josh missed/.test(d.content)), "and it says why");
+  assert(!T.otto_desk.some((d: any) => /waiting for Josh to Approve or Reject/.test(d.content)) && !pings.some((x) => /card waiting/i.test(x.title)), "no 'waiting for Josh' line or ping for it");
+  assert((await (M as any).autopilotRoute(null, HOUSE9)).trades.length === 0 && apRow9().on === true, "a pass is not a trade and does not use up the limit");
+  const nx: any = await M.proposeAction(nvda9(), "watcher");
+  assert(nx.status === "paper_taken" && nx.plan.autopilot.n === 1, "the next clean card is still taken: " + nx.status);
   // LIVE: Jarvis's own ideas switched on to go live → pending, a human tap
   ap9(); T.otto_settings = [{ key: "limits", value: { size_cap_on: false, kill_on: false, live_jarvis: true } }]; (M as any).clearCacheForTest();
   await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
@@ -2712,6 +2716,21 @@ Deno.test("v5.9 OttoPilot numbers, the Scoreboard line and the pure helpers", as
   assert(ps.josh.n === 1 && ps.josh.est === 60 && ps.taken === 4 && ps.balance === 4070 && ps.overrides.n === 0, "Josh's own line and the book total: " + JSON.stringify(ps.josh) + " " + ps.balance);
   const rows: any[] = M.scoreRows([mkA("1", "win", 120, { on_plan: true, why: { setup: "s" } }), mkA("2", "loss", -70, { on_plan: false }), mkA("4", "win", 60, null)] as any, {});
   assert(rows[0].autopilot === "plan" && rows[0].ap_why === "s" && rows[1].autopilot === "off" && rows[2].autopilot === null && rows[0].override === false, "scoreboard rows: " + JSON.stringify(rows.map((r) => r.autopilot)));
+  // v5.9.2: an OttoPilot pass is not Josh's answer, reject or missed card
+  const mkP = (id: string) => ({ id, status: "rejected", created_at: "2026-10-21T14:00:00Z", plan: { practice: true, autopilot_pass: { why: "No Edge banner" } }, outcome: { state: "loss", pnl_est: -90 } });
+  const ps2: any = M.practiceStats([mkA("1", "win", 120, { on_plan: true }), mkA("4", "win", 60, null), mkP("5"), { id: "6", status: "rejected", created_at: "2026-10-21T14:00:00Z", plan: { practice: true, josh_reject_why: { why_not: "x" } } }], { start: 4000, since: "2026-10-20T00:00:00Z" });
+  assert(ps2.autopilot.passed === 1 && ps2.answered === 3 && ps2.rejected === 1 && ps2.expired === 0 && ps2.offered === 4 && ps2.balance === 4180, "pass kept out of Josh's numbers and out of the book: " + JSON.stringify({ a: ps2.answered, r: ps2.rejected, p: ps2.autopilot.passed, b: ps2.balance }));
+  const rw: any[] = M.scoreRows([mkP("5")] as any, {});
+  assert(rw[0].autopilot === "pass" && rw[0].ap_why === "No Edge banner", "row: " + JSON.stringify(rw[0].autopilot));
+  // v5.9.2: Baby J's why reads the idea, not the cost line (the real 11 Nov AMD and SPY cards)
+  const I = (M as any).apIdea;
+  const amd = I({ plan: { level: 528 }, summary: "PAPER — Coach Signal long AMD · 1× 542.5C 11/13 @ $9.20 limit · Cost $920, OVER $837.92 buying power (red banner — nothing fits) · Coach's level: bottom of the gap; direction: long (his) · Entry trigger: 10-min candle close confirming hold at gap bottom · Stop: entry candle open violated on 5-min close · TP1: top of gap (Jarvis estimate ~$543–545 on underlying) · stop_option $4.50 (loss ~$470 at stop — OVER $84 max; size flag) · ALL contracts over buying power; cheapest ★ carded per rules." });
+  assert(amd === "Coach's level: bottom of the gap; direction: long (his) · Entry trigger: 10-min candle close confirming hold at gap bottom", "AMD idea: " + amd);
+  const spy = I({ plan: { level: 755.32 }, summary: "PAPER — Autopilot card (Watcher trigger, Josh away)\n\n── ORDER ──\nUnderlying: SPY @ ~756.33\nContract: SPY 759C 11/12 · 1 contract · limit $1.47\nMax cost: $147 (17.5% of $838 account)\n\n── ENTRY TRIGGER ──\n10-min candle 9:50–10:00 ET closed 756.33 — above Josh's 755.32 buy-side level (▲). Hold confirmed.\n\n── FLAGS ──\n⚠ Banner: NO EDGE (score 0)" });
+  assert(/^10-min candle 9:50–10:00 ET closed 756\.33 — above Josh's 755\.32 buy-side level/.test(spy) && !/cost|contract|banner/i.test(spy), "SPY idea: " + spy);
+  assert(I({ plan: { level: 700 }, summary: "Cost $300 · limit $3.00" }) === "Built on the 700 level." && I({ plan: {}, summary: "t" }) === "", "fallbacks");
+  const wy = (M as any).apWhy({ plan: { tv_symbol: "NASDAQ:AMD", direction: "up", setup: "support bounce", tp1: 544, stop: 525, level: 528, entry_underlying: 528 }, summary: "Cost $920, OVER $837.92 buying power · Coach's level: bottom of the gap" });
+  assert(wy.setup === "support bounce on AMD (calls). Coach's level: bottom of the gap" && !/buying power/.test(wy.setup), "why: " + wy.setup);
   // Jarvis is told the truth about what runs on its own
   ap9();
   assert(/OttoPilot: OFF — every practice card waits for Josh/.test(await M.runningNow()), "running list, off");

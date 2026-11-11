@@ -1713,7 +1713,8 @@ export async function whyAttach(id: string, who: string, why: any, tp1: any = nu
    What it is: while OttoPilot is on, a new PRACTICE card (status paper_wait) is answered by the server with the same
    practiceOn() Josh's Approve uses — fill at the live ask, scored by the card's own rules. Nothing else changes.
    What it never does: a LIVE card (status pending) still waits for a human tap; the manual Order ticket is never touched;
-   a card Baby J himself flagged weak (No Edge / Choppy / a chase) is left for Josh. There is no order code in this block. */
+   a card Baby J himself flagged weak (No Edge / Choppy / a chase) is never TAKEN — since v5.9.2 it is recorded as passed by
+   OttoPilot (plan.autopilot_pass) instead of expiring on Josh. There is no order code in this block. */
 export const AP_DEFAULTS = { max_trades: 3, max_losses: 2, last_entry_min: 900 };
 const AP_KEY = "autopilot";
 const apHuman = (v: any, who: string) => String(v || "").replace(/[^A-Za-z .'-]/g, "").trim().slice(0, 30) || who.split("@")[0];
@@ -1753,10 +1754,21 @@ export function apOnPlan(plan: any, items: any[]): boolean {
   const tk = apTk(plan), d = plan?.direction;
   return !!tk && (items || []).some((x: any) => String(x?.ticker || "").toUpperCase() === tk && (!x.direction || x.direction === "both" || x.direction === d));
 }
+/* v5.9.2: the IDEA lines of a card's summary — the level, the trigger, what price did — without the order, cost, size, contract
+   and flag lines (11 Nov: the AMD why read "Cost $920, OVER $837.92 buying power"). Nothing usable → the level the card is built on. Pure. */
+export function apIdea(a: any): string {
+  const p = a?.plan || {};
+  const parts = String(a?.summary || "").split(/\s+·\s+|\n+/).map((x) => x.replace(/^[\s•\-–—]+/, "").replace(/\s+/g, " ").trim()).filter(Boolean);
+  const junk = /cost\b|buying power|contract|limit\b|stop_option|max loss|size (cap|flag)|\bdelta\b|volume|open interest|\bOI\b|expir|^PAPER|^PRACTICE|^LIVE|──|otto rules|house rule|banner|^⚠|\$\d[\d,.]* ?\(|TP2|runner|option stop/i;
+  const good = /level|trigger|clos(e|ed)|hold|held|break|broke|reclaim|reject|bounce|support|resistance|gap|vwap|retest|pullback/i;
+  const picked = parts.filter((x) => x.length >= 12 && x.length <= 220 && good.test(x) && !junk.test(x)).slice(0, 2);
+  if (picked.length) return picked.join(" · ");
+  return p.level != null ? `Built on the ${p.level} level.` : "";
+}
 /* Baby J's why for a trade he takes himself: his own card, in the three lines Josh is asked for. No extra AI call. Pure. */
 export function apWhy(a: any): any {
-  const p = a?.plan || {}, tk = apTk(p), sum = String(a?.summary || "").replace(/\s+/g, " ").trim();
-  const setup = `${String(p.setup || "setup")} on ${tk} (${p.direction === "down" ? "puts" : "calls"}). ${sum}`.trim().slice(0, 400);
+  const p = a?.plan || {}, tk = apTk(p);
+  const setup = `${String(p.setup || "setup")} on ${tk} (${p.direction === "down" ? "puts" : "calls"}). ${apIdea(a)}`.trim().slice(0, 400);
   const why_now = (p.level != null ? `Price reached the level the idea is built on (${p.level}). ` : "The setup triggered. ") +
     `Entry near ${p.entry_underlying ?? "the card's price"}, target ${p.tp1}.`;
   const kills = `A ${Number(p.wrong_tf) === 15 ? 15 : 5}-minute close ${p.direction === "down" ? "above" : "below"} ${p.stop} (the card's wrong-if).`;
@@ -1801,10 +1813,18 @@ export async function autopilotTake(a: any): Promise<any | null> {
   const stop = apStop(st.cfg, trades, etParts().min);
   if (stop) { await apOff("it reached " + stop, "Otto"); return null; }
   const weak = overrideRead(a);
-  if (weak) { await logDesk("system", "Otto", `🛫 OttoPilot left this one for Josh — Baby J flagged it himself: "${weak}". ${a.title}`, a.id); return null; }
+  if (weak) {   // v5.9.2 (Ifoma, 11 Nov): Baby J's own "weak" is his decision — passed now, not left to expire on Josh; still graded as a what-if
+    const now = new Date().toISOString();
+    const r = await db("otto_actions?id=eq." + a.id + "&status=eq.paper_wait", { method: "PATCH",
+      body: JSON.stringify({ status: "rejected", decided_by: "autopilot", decided_at: now, plan: { ...(a.plan || {}), autopilot_pass: { why: weak, at: now, switched_by: st.by || null } } }) });
+    if (!r?.[0]) return null;
+    await logDesk("system", "Otto", `🛫 OttoPilot passed on this one — Baby J flagged it himself: "${weak}". ${a.title}. It is still scored as a what-if, and it does not count as a card Josh missed.`, a.id);
+    await activity("card", `OttoPilot passed (Baby J flagged it weak): ${a.title}`, "OttoPilot").catch(() => {});
+    return publicAction(r[0]);
+  }
   const taken = await practiceOn(a, "approve", "autopilot", null, { fill_now: true,
     autopilot: { on_plan: apOnPlan(a.plan, st.plan?.items || []), why: apWhy(a), switched_by: st.by || null, n: trades.length + 1 } });
-  if (taken?.status !== "paper_taken" || !taken?.plan?.autopilot) return null;
+  if (taken?.status !== "paper_taken" || !taken?.plan?.autopilot) return null;   // (a weak card returned above as "rejected")
   await notify("card", `🛫 OttoPilot took: ${String(a.title).slice(0, 70)}`, `Practice trade ${trades.length + 1} of ${st.cfg.max_trades}${taken.plan.autopilot.on_plan ? "" : " · OFF PLAN"}. Nothing was sent to Robinhood.`).catch(() => {});
   if (trades.length + 1 >= st.cfg.max_trades) await apOff(`it reached the trade limit (${st.cfg.max_trades} trade${st.cfg.max_trades === 1 ? "" : "s"} a day)`, "Otto");
   return taken;
@@ -1886,7 +1906,7 @@ export async function autopilotRoute(body: any, who: string) {
       if (stop) throw new Error(`OttoPilot can't start: today already reached ${stop}. Change the number in the OttoPilot box if you want more.`);
       const plan = await apBuildPlan();
       await apPut({ on: true, day: e.date, by, at: new Date().toISOString(), plan, off: null });
-      await logDesk("system", "Otto", `🛫 OttoPilot ON — switched on by ${by}. Baby J now answers his own PRACTICE cards until ${st0.cfg.max_trades} trade${st0.cfg.max_trades === 1 ? "" : "s"}, ${st0.cfg.max_losses ? st0.cfg.max_losses + " losing trade" + (st0.cfg.max_losses === 1 ? "" : "s") + ", " : ""}or ${fmtMin(st0.cfg.last_entry_min)} ET, whichever comes first. ${apPlanLine(plan)} Practice only: a LIVE (real money) card still waits for a human tap. A card Baby J flags weak is left for Josh.`);
+      await logDesk("system", "Otto", `🛫 OttoPilot ON — switched on by ${by}. Baby J now answers his own PRACTICE cards until ${st0.cfg.max_trades} trade${st0.cfg.max_trades === 1 ? "" : "s"}, ${st0.cfg.max_losses ? st0.cfg.max_losses + " losing trade" + (st0.cfg.max_losses === 1 ? "" : "s") + ", " : ""}or ${fmtMin(st0.cfg.last_entry_min)} ET, whichever comes first. ${apPlanLine(plan)} Practice only: a LIVE (real money) card still waits for a human tap. A card Baby J flags weak himself is passed, not taken.`);
       await activity("change", `OttoPilot ON (by ${by})`, by).catch(() => {});
       if (marketClock().status === "open") {                                             // cards already waiting when it is switched on
         const wait: any[] = (await db("otto_actions?" + OQ() + "select=*&status=eq.paper_wait&order=created_at.asc&limit=6").catch(() => [])) || [];
@@ -3884,7 +3904,7 @@ export function scoreRows(ideas: any[], pnlBy: Record<string, number>) {
     // v3.41: the practice book, overrides and Josh's whys ride along for the Scoreboard and the report card
     practice: isPracticeCard(a), override: !!a.plan?.override || noWhy(a), override_read: a.plan?.override_read ?? (noWhy(a) ? NO_WHY_TEXT : null),   // v5.7: no why = an override
     why_pending: !!a.plan?.why_pending && !a.plan?.josh_why, tp1_card: a.plan?.tp1_card ?? null,
-    autopilot: a.plan?.autopilot ? (a.plan.autopilot.on_plan ? "plan" : "off") : null, ap_why: a.plan?.autopilot?.why?.setup ?? null,   // v5.9
+    autopilot: a.plan?.autopilot ? (a.plan.autopilot.on_plan ? "plan" : "off") : a.plan?.autopilot_pass ? "pass" : null, ap_why: a.plan?.autopilot?.why?.setup ?? a.plan?.autopilot_pass?.why ?? null,   // v5.9 / v5.9.2
     why: a.plan?.josh_why ? { setup: a.plan.josh_why.setup, why_now: a.plan.josh_why.why_now, kills: a.plan.josh_why.kills } : null,
     why_not: a.plan?.josh_reject_why?.why_not ?? null, exit_why: a.plan?.josh_exit_why?.text ?? null,
     // v3.43: a practice trade Josh closed by hand, and what the rule would have done
@@ -5970,7 +5990,8 @@ export function practiceStats(acts: any[], book: { start: number; since: string 
   // v3.45: a card the server (or Ifoma) marked as a duplicate of another (plan.duplicate_of) is not offered, taken or scored — 22 Oct META 632.5P was built twice.
   const cards = (acts || []).filter((a: any) => isPracticeCard(a) && !a?.plan?.duplicate_of && Date.parse(a.created_at) >= since);
   const taken = cards.filter((a: any) => a.status === "paper_taken");
-  const answered = cards.filter((a: any) => a.status === "paper_taken" || a.status === "rejected");
+  const apPassed = cards.filter((a: any) => a.status === "rejected" && a.plan?.autopilot_pass);                    // v5.9.2
+  const answered = cards.filter((a: any) => a.status === "paper_taken" || (a.status === "rejected" && !a.plan?.autopilot_pass));
   const expired = cards.filter((a: any) => a.status === "expired");
   const est = (a: any) => (a.outcome && ["win", "loss", "scratch"].includes(a.outcome.state) && a.outcome.pnl_est != null) ? Number(a.outcome.pnl_est) : 0;
   const ov = cards.filter((a: any) => (a.plan?.override || noWhy(a)) && a.status === "paper_taken");   // v5.7: a why left unanswered counts
@@ -5981,7 +6002,7 @@ export function practiceStats(acts: any[], book: { start: number; since: string 
   const grp = (xs: any[]) => ({ n: xs.length, wins: xs.filter((a: any) => a.outcome?.state === "win").length, losses: xs.filter((a: any) => a.outcome?.state === "loss").length,
     est: Math.round(xs.reduce((s: number, a: any) => s + est(a), 0)) });
   return {
-    autopilot: { ...grp(apc), on_plan: grp(apc.filter((a: any) => a.plan.autopilot.on_plan)), off_plan: grp(apc.filter((a: any) => !a.plan.autopilot.on_plan)) },
+    autopilot: { ...grp(apc), passed: apPassed.length, on_plan: grp(apc.filter((a: any) => a.plan.autopilot.on_plan)), off_plan: grp(apc.filter((a: any) => !a.plan.autopilot.on_plan)) },
     josh: grp(taken.filter((a: any) => !a.plan?.autopilot)),
     start: book.start, since: book.since, balance: Math.round((book.start + taken.reduce((s: number, a: any) => s + est(a), 0)) * 100) / 100,
     offered: cards.length, answered: answered.length, taken: taken.length, rejected: answered.length - taken.length, expired: expired.length,
@@ -7438,7 +7459,7 @@ export async function runningNow(): Promise<string> {
 - 🛡 Protected trades: ${(prot || []).length ? prot.map((r: any) => `${r.title} (Robinhood stop at $${r.exit?.stop_option}, TradingView alerts wrong-if ${r.exit?.wrong_if} / TP1 ${r.exit?.tp1})`).join("; ") : "none"}.
 - Auto-close: ${L.auto_close ? `ON — position check every ${Math.max(5, Number(L.review_min) || 15)} min while a trade is open (HOLD or CLOSE only)` : "OFF"}.
 - TradingView alert fires read every 2 min. Otto Signals watcher: ${beatOk ? "on" : "NOT reporting — signals may be missed"}.
-- 🛫 OttoPilot: ${apS?.on ? `ON (switched on by ${apS.by || "the trader"}) — the SERVER answers your new PRACTICE cards for you the moment you build them; say so plainly if asked. Stops at ${apS.cfg.max_trades} trades, ${apS.cfg.max_losses} losing trades or ${fmtMin(apS.cfg.last_entry_min)} ET. A LIVE card still needs a human tap; a card you flag weak is left for Josh` : "OFF — every practice card waits for Josh's Approve or Reject"}.
+- 🛫 OttoPilot: ${apS?.on ? `ON (switched on by ${apS.by || "the trader"}) — the SERVER answers your new PRACTICE cards for you the moment you build them; say so plainly if asked. Stops at ${apS.cfg.max_trades} trades, ${apS.cfg.max_losses} losing trades or ${fmtMin(apS.cfg.last_entry_min)} ET. A LIVE card still needs a human tap; a card you flag weak is recorded as passed, not taken` : "OFF — every practice card waits for Josh's Approve or Reject"}.
 To make a new promise true: schedule_check (a timed look + ping) or add_watch_level (a price level). Otherwise say plainly you can't.${earsHeardBlock(earsSt, day)}`;
 }
 
