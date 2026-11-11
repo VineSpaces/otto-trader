@@ -110,7 +110,7 @@ function fakeMd(service: string, tool: string, args: any) {
   throw new Error("fake md: unsupported " + tool);
 }
 let aiScript: ((a: any) => any) | null = null;
-function fakeAi(a: any) { W.ai.n++; W.ai.last = a; const out = aiScript ? aiScript(a) : { decisions: [], passes: [] }; return { out, usage: { input: 1000, output: 200 } }; }
+function fakeAi(a: any) { W.ai.n++; W.ai.last = a; const out = aiScript ? aiScript(a) : { decisions: [], passes: [] }; return { out, usage: { input: 1000, output: 200 }, model: "claude-sonnet-5-5" }; }
 
 (globalThis as any).__WINSTON_TEST__ = { db: fakeDb, md: fakeMd, ai: fakeAi, now: () => NOW, sleep: async (ms: number) => { NOW += ms; } };
 (globalThis as any).fetch = (u: any) => Promise.reject(new Error("network disabled in tests: " + String(u).slice(0, 80)));
@@ -1381,6 +1381,7 @@ Deno.test("v4.8.6 PREP switch: off = skipped before the open; on = he reads and 
   W.spot = { NVDA: 200, SPY: 600, QQQ: 520, TLT: 90 }; W.prev = { ...W.spot }; W.bars = {}; W.opts = {}; W.ai.n = 0;
   TABLES.otto_jason.push({ id: 1, day: "2026-10-14", posted_label: "8:40 AM", kind: "level", ticker: "NVDA", direction: "long", level: 200, words: "NVDA over 200", late: false });
   aiScript = () => ({ decisions: [{ ticker: "NVDA", side: "call", source: "coach:1", thesis: "over 200 holds", wrong_if_level: 198, target_level: 204, trigger_level: 200, cites: [], rule_ids: [] }], passes: [], notes: { summary: "prep read" } });
+  await X.setEnabled({ prep_auto: false });   // v5.8: automatic prep is on by default; this test is about the MANUAL switch
   let r = await X.tick(); assert(r.skipped, "switch off: skipped before the open"); eq(W.ai.n, 0, "no AI while off");
   const sw = await X.setEnabled({ prep_on: true }); eq([sw.ok, sw.prep_on, sw.prep_day], [true, true, "2026-10-14"], "switch on, today only");
   r = await X.tick(); assert(r.ok && r.prep, "prep look ran: " + JSON.stringify(r)); eq(W.ai.n, 1, "one AI look");
@@ -1839,4 +1840,60 @@ Deno.test("v5.5 G: W22 unchanged (coach: 'he's doing the right thing'); live wee
   eq(X.EARLY_EXITS.slice(0, 4), ["coach_exit", "time", "trail", "breakeven"], "W22 still the coach_exit");
   eq(X.liveLimitsOf({}).coach_only, false, "default: own + coach level ideas");
   eq(X.liveLimitsOf({ coach_only: true }).coach_only, true, "the switch still works");
+});
+
+/* =========================== v5.8 (10 Nov 2026): cost build + automatic prep + event-day fix =========================== */
+Deno.test("v5.8 automatic prep: two looks before the bell (first tick at or after 8:35 and 9:15 ET), no switch to press; the second sees the new post and the routine; the model is stamped; prep_auto false or paused = none", async () => {
+  seed(); setNow("2026-10-14T12:30:00Z");   // 8:30 AM ET
+  W.spot = { NVDA: 200, SPY: 600, QQQ: 520, TLT: 90 }; W.prev = { ...W.spot }; W.bars = {}; W.opts = {}; W.ai.n = 0;
+  aiScript = () => ({ decisions: [], passes: [], notes: { summary: "prep read" } });
+  let r = await X.tick(); assert(r.skipped, "8:30: before the first slot"); eq(W.ai.n, 0, "no AI at 8:30");
+  eq([X.prepSlotDue(514, []), X.prepSlotDue(515, []), X.prepSlotDue(540, [515]), X.prepSlotDue(555, [515]), X.prepSlotDue(555, []), X.prepSlotDue(555, [515, 555]), X.prepSlotDue(570, [])], [null, 515, null, 555, 555, null, null], "slot arithmetic");
+  setNow("2026-10-14T12:41:00Z"); r = await X.tick();
+  assert(r.ok && r.prep && r.slot === 515 && r.model === "claude-sonnet-5-5", "first look at 8:41 (first tick after 8:35), model stamped: " + JSON.stringify(r)); eq(W.ai.n, 1, "one AI look");
+  assert(/scheduled pre-market look/.test(W.ai.last.user) && !/Ifoma switched you/.test(W.ai.last.user), "prompt no longer says Ifoma switched him on");
+  setNow("2026-10-14T12:51:00Z"); r = await X.tick(); assert(r.skipped, "8:51: slot already done, no manual switch: nothing"); eq(W.ai.n, 1, "no second call at 8:51");
+  TABLES.otto_jason.push({ id: 1, day: "2026-10-14", posted_label: "9:05 AM", kind: "level", ticker: "NVDA", direction: "long", level: 200, words: "NVDA over 200", late: false });
+  const row = TABLES.winston_days.find((d) => d.day === "2026-10-14"); if (row) row.routine = { bias: "ROUTINEMARK risk-off" }; else TABLES.winston_days.push({ day: "2026-10-14", routine: { bias: "ROUTINEMARK risk-off" } });
+  setNow("2026-10-14T13:21:00Z"); r = await X.tick();
+  assert(r.ok && r.prep && r.slot === 555, "second look at 9:21: " + JSON.stringify(r)); eq(W.ai.n, 2, "two looks in all");
+  assert(/\[id 1 NEW\]/.test(W.ai.last.user) && /ROUTINEMARK/.test(W.ai.last.user), "the 9:15 look sees the new coach post and the 8:45 routine");
+  eq(TABLES.winston_settings.find((s) => s.key === "prep").value.slots, [515, 555], "both slots recorded");
+  eq([TABLES.winston_trades.length, TABLES.winston_ideas.length, TABLES.winston_shadows.length], [0, 0, 0], "prep places nothing");
+  assert(!TABLES.winston_settings.find((s) => s.key === "tick_state"), "tick_state untouched: the post is still NEW at the open");
+  setNow("2026-10-15T12:41:00Z"); r = await X.tick(); assert(r.prep && r.slot === 515, "next day it runs again by itself"); eq(W.ai.n, 3, "third look");
+  await X.setEnabled({ prep_auto: false });
+  setNow("2026-10-16T12:41:00Z"); r = await X.tick(); assert(r.skipped, "prep_auto false: no prep"); eq(W.ai.n, 3, "no AI");
+  await X.setEnabled({ prep_auto: true }); await X.setEnabled({ enabled: false });
+  r = await X.tick(); assert(!r.prep && W.ai.n === 3, "paused: no prep"); await X.setEnabled({ enabled: true });
+});
+Deno.test("v5.8 event day: 10 Nov replay — 'Inflation Rate MoM and YoY' / 'Core Inflation Rate' count as the CPI event; nine small-cap earnings movers do not switch the day on; a mega-cap mover still does", async () => {
+  for (const t of ["Inflation Rate MoM and YoY", "Core Inflation Rate MoM and YoY", "CPI (Oct)", "Core PCE Price Index", "Non Farm Payrolls", "Fed Interest Rate Decision"]) assert(X.EVENT_RE.test(t), t + " is an event");
+  for (const t of ["Initial Jobless Claims", "30-Year Bond Auction", "Fed Chair Speech"]) assert(!X.EVENT_RE.test(t), t + " is not");
+  assert(!X.isMajorName("USAR") && !X.isMajorName("APPS") && X.isMajorName("AMD") && X.isMajorName("nvda") && X.isMajorName("ZZZ", ["ZZZ"]), "mega-cap list + the universe");
+  seed(); W.spot = { SPY: 748, NVDA: 180 }; W.prev = { SPY: 752, NVDA: 183 };
+  (W as any).earnings = ["USAR", "AMRC", "HROW", "APPS"].map((symbol) => ({ symbol, report: { date: "2026-11-10", timing: "bmo" } }));
+  Object.assign(W.spot, { USAR: 9, AMRC: 20, HROW: 5, APPS: 3 }); Object.assign(W.prev, { USAR: 10, AMRC: 18, HROW: 4, APPS: 4 });
+  W.calendar = [{ date: "2026-11-10T13:30:00Z", title: "Inflation Rate MoM and YoY", importance: 1 }, { date: "2026-11-10T13:30:00Z", title: "Core Inflation Rate MoM and YoY", importance: 1 }];
+  aiScript = (a: any) => a.tool.name === "routine" ? { bias: "x", events: [], watch: [], risks: [] } : { tone: "mixed", read: "x" };
+  setNow("2026-11-10T13:45:00Z"); await X.routine();   // 8:45 AM ET
+  const ev = TABLES.winston_settings.find((s) => s.key === "event_day").value;
+  assert(ev.macro.length === 2 && /Inflation Rate/.test(ev.macro[0]) && ev.read.on, "CPI day is now seen as an event day: " + JSON.stringify(ev));
+  eq(ev.catalyst, [], "small-cap movers are not catalysts");
+  eq(X.eventDayRead("2026-11-10", [], ev.catalyst, undefined, undefined, false).on, false, "with no scheduled event, small caps alone leave the day OFF");
+});
+Deno.test("v5.8 cost build: the tick prompt is split into a STABLE head (rulebook + standing instructions) and a changing tail; the head is byte-identical from tick to tick (that is what makes the cache hit); the tick row carries the model and the token stamp", async () => {
+  seed(); setNow("2026-10-14T14:11:00Z"); await setupCall(); aiScript = () => ({ decisions: [], passes: [], notes: { summary: "quiet" } });
+  const r1: any = await X.tick(); const u1 = String(W.ai.last.user);
+  assert(r1.model === "claude-sonnet-5-5" && r1.tokens?.in === 1000 && r1.tokens?.out === 200 && r1.tokens?.cache_r === 0, "tick row carries model + tokens: " + JSON.stringify([r1.model, r1.tokens]));
+  setNow("2026-10-14T14:21:00Z"); W.spot.NVDA = 203; W.bars.NVDA.push(barRow("2026-10-14T13:50:00Z", 200.5, 204, 200, 203));
+  TABLES.otto_jason.push({ id: 2, day: "2026-10-14", posted_label: "10:15 AM", kind: "level", ticker: "SPY", direction: "short", level: 598, words: "SPY below 598", late: false });
+  const r2: any = await X.tick(); const u2 = String(W.ai.last.user);
+  const cut = (u: string) => u.indexOf("\nIt is ");
+  assert(cut(u1) > 3000 && cut(u2) > 3000, "the stable head is substantial: " + cut(u1));
+  eq(u1.slice(0, cut(u1)), u2.slice(0, cut(u2)), "the head is identical on both ticks (cache-safe)");
+  assert(u1.startsWith("RULES:") && /COACH POSTS ARE LEVELS/.test(u1.slice(0, cut(u1))) && /WINNERS \(F\)/.test(u1.slice(0, cut(u1))), "head = rulebook + standing instructions");
+  const tail1 = u1.slice(cut(u1)), tail2 = u2.slice(cut(u2));
+  assert(/COACH POSTS TODAY/.test(tail1) && /CHART SNAPSHOT/.test(tail1) && /TRIGGERS \(v4\.3\)/.test(tail1) && /Decide now/.test(tail1) && !/RULES:\n/.test(tail1), "tail = the data and the question");
+  assert(tail1 !== tail2 && /SPY below 598/.test(tail2), "the tail changes (new post), the head does not");
 });

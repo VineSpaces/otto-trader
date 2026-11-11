@@ -90,3 +90,38 @@ Deno.test("v5.4.1 Opus replies with three decide calls (one per idea): all three
     assert(!LOG.some((l) => l.kind === "ai_fallback"), "no fallback");
   } finally { (globalThis as any).fetch = saved; }
 });
+
+// ---------- v5.8 (10 Nov 2026): prompt cache on the rulebook; a cache refusal can never make Winston blind ----------
+Deno.test("v5.8 cache: the stable block goes first as its own text block with a 1-hour cache mark, the changing part second; cache tokens come back in usage", async () => {
+  reset("ok", "ok");
+  const saved = (globalThis as any).fetch;
+  (globalThis as any).fetch = (u: any, init: any) => {
+    const body = JSON.parse(init.body); CALLS.push({ model: body.model, body, hasSignal: !!init.signal });
+    return reply({ content: [{ type: "tool_use", id: "t1", name: "decide", input: { ok: 1 } }], usage: { input_tokens: 700, output_tokens: 40, cache_creation_input_tokens: 5200, cache_read_input_tokens: 0 } });
+  };
+  try {
+    const r = await W.aiJson("SYS", "DYNAMIC DATA", TOOL, 6000, "STABLE RULEBOOK");
+    const m = CALLS[0].body.messages[0].content;
+    assert(Array.isArray(m) && m.length === 2, "content is two blocks");
+    assert(m[0].text === "STABLE RULEBOOK" && m[0].cache_control?.type === "ephemeral" && m[0].cache_control?.ttl === "1h", "stable block first, 1-hour cache mark");
+    assert(m[1].text === "DYNAMIC DATA" && !m[1].cache_control, "dynamic block second, not cached");
+    assert(r.usage.input === 700 && r.usage.cache_w === 5200 && r.usage.cache_r === 0, "usage carries the cache write: " + JSON.stringify(r.usage));
+    reset("ok", "ok"); await W.aiJson("SYS", "PLAIN", TOOL);
+    assert(CALLS[0].body.messages[0].content === "PLAIN", "no stable block: the request is exactly as before (plain string)");
+  } finally { (globalThis as any).fetch = saved; }
+});
+Deno.test("v5.8 cache refused by the API (400): the same question is asked again as plain text on the SAME model, answered, and logged as ai_cache_off — no fallback, no blind tick", async () => {
+  reset("ok", "ok");
+  const saved = (globalThis as any).fetch;
+  (globalThis as any).fetch = (u: any, init: any) => {
+    const body = JSON.parse(init.body); CALLS.push({ model: body.model, body, hasSignal: !!init.signal });
+    if (Array.isArray(body.messages[0].content)) return reply({ type: "error", error: { type: "invalid_request_error", message: "cache_control.ttl: extra inputs are not permitted" } }, 400);
+    return reply({ content: [{ type: "tool_use", id: "t1", name: "decide", input: { answer: "plain" } }], usage: { input_tokens: 6000, output_tokens: 50 } });
+  };
+  try {
+    const r = await W.aiJson("SYS", "DYNAMIC", TOOL, 6000, "STABLE");
+    assert(CALLS.length === 2 && CALLS[1].body.messages[0].content === "STABLE\nDYNAMIC", "second call is the plain text, stable first: " + JSON.stringify(CALLS[1]?.body.messages[0].content));
+    assert(CALLS[0].model === CALLS[1].model && r.out.answer === "plain", "same model answered");
+    assert(LOG.some((l) => l.kind === "ai_cache_off" && /ttl/.test(l.data.msg)) && !LOG.some((l) => l.kind === "ai_fallback"), "ai_cache_off logged, no model fallback");
+  } finally { (globalThis as any).fetch = saved; }
+});
