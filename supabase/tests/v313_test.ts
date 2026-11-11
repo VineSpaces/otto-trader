@@ -2551,3 +2551,187 @@ Deno.test("v3.44 fix 1: the app asks the one-line why on EVERY reject of a waiti
   const r: any = await M.actOnForTest("20cc74a7-0000-4000-8000-000000000001", "reject", "Josh", "wrong instrument — that is a stock order");
   assert(r.status === "rejected" && T.otto_actions[0].plan.josh_reject_why.why_not === "wrong instrument — that is a stock order", JSON.stringify(r));
 });
+
+/* ===================================================================== v5.9 (11 Nov 2026) — AUTOPILOT for Baby J
+   Josh or Ifoma switches it on; Baby J then answers his own PRACTICE cards (fill at the ask, his own why), on plan or OFF PLAN,
+   until 3 trades / 2 losing trades / 3:00 PM. A LIVE card, the manual ticket and a card he flagged weak are never touched. */
+const HOUSE9 = "ottotrader@vinecreativestudio.com";
+const ap9 = () => { reset(); (M as any).clearCacheForTest(); T.otto_settings = [{ key: "limits", value: { size_cap_on: false, kill_on: false } }]; setNow("2026-10-06T14:32:00Z"); };   // 10:32 AM ET, only the coach's call may go live
+const spyWatch9 = () => T.otto_watch.push({ id: 901, day: "2026-10-06", ticker: "SPY", level: 778.6, dir: "up", status: "watching", created_at: "2026-10-06T13:00:00Z" });
+const nvda9 = () => optCard("NVDA", "NVDA-2026-10-16-put-237.5", 4.55, "down", 3.38, 235, 237);
+const mu9 = () => optCard("MU", "MU-2026-10-16-put-1075", 3.2, "down", 2.6, 1074, 1082);
+const spyPut9 = () => { const c: any = spyCard(); c.plan = { ...c.plan, direction: "down", tp1: 776, stop: 780 }; return c; };
+const apRow9 = () => (T.otto_settings.find((r: any) => r.key === "autopilot")?.value?.rooms || {})[HOUSE9] || {};
+
+Deno.test("v5.9 Autopilot OFF (the default): a practice card waits for Josh exactly as before; the route reports off with the default numbers", async () => {
+  ap9();
+  const v: any = await (M as any).autopilotRoute(null, HOUSE9);
+  assert(v.ok && v.on === false && v.cfg.max_trades === 3 && v.cfg.max_losses === 2 && v.cfg.last_entry_min === 900 && v.trades.length === 0, JSON.stringify(v));
+  const c: any = await M.proposeAction(spyCard(), "watcher");
+  assert(c.status === "paper_wait" && !c.plan.autopilot && !c.plan.paper_fill, "waits for Josh: " + c.status);
+  assert(T.otto_desk.some((d: any) => /waiting for Josh to Approve or Reject/.test(d.content)), "the waiting line is still written");
+});
+
+Deno.test("v5.9 Autopilot ON: Baby J takes his own practice card at the ask with his own why; on plan vs OFF PLAN; no order tool; Josh's why is never faked", async () => {
+  ap9(); spyWatch9();
+  const on: any = await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
+  assert(on.on === true && on.by === "Josh" && on.plan.items.length === 1 && on.plan.items[0].ticker === "SPY" && on.plan.items[0].direction === "up" && on.plan.items[0].src === "watcher", "plan from the Watcher level: " + JSON.stringify(on.plan));
+  assert(claudeBodies.length === 0, "no AI call when nobody talked this morning");
+  assert(T.otto_desk.some((d: any) => /🛫 Autopilot ON — switched on by Josh/.test(d.content) && /3 trades, 2 losing trades, or 3:00 PM ET/.test(d.content) && /SPY ▲ 778\.6/.test(d.content) && /LIVE \(real money\) card still waits for a human tap/.test(d.content)), "the ON line: " + T.otto_desk.map((d: any) => d.content).join(" | ").slice(0, 600));
+  calls = [];
+  const c: any = await M.proposeAction(spyCard(), "watcher");
+  assert(c.status === "paper_taken" && c.decided_by === "autopilot", "taken by autopilot: " + c.status + " " + c.decided_by);
+  const p = c.plan;
+  assert(p.autopilot && p.autopilot.on_plan === true && p.autopilot.n === 1 && p.autopilot.switched_by === "Josh" && p.autopilot.at, "stamp: " + JSON.stringify(p.autopilot));
+  assert(/trend continuation on SPY \(calls\)/.test(p.autopilot.why.setup) && /5-minute close below 778\.6/.test(p.autopilot.why.kills) && /target 784\.5/.test(p.autopilot.why.why_now), "Baby J's why from his card: " + JSON.stringify(p.autopilot.why));
+  assert(p.why_pending === false && !p.josh_why && !p.override, "not Josh's why, not pending, not an override");
+  assert(p.paper_fill && p.paper_fill.by === "autopilot" && p.paper_fill.at, "fill stamped: " + JSON.stringify(p.paper_fill));
+  assert(!calls.some((x) => /^place_|cancel_|exercise/.test(x.tool)) && orders.length === 0, "no order tool: " + calls.map((x) => x.tool).join(","));
+  assert(T.otto_desk.some((d: any) => /🛫 Autopilot took a practice trade/.test(d.content) && /On this morning's plan/.test(d.content) && /Nothing was sent to Robinhood/.test(d.content)), "take line");
+  assert(!T.otto_desk.some((d: any) => /waiting for Josh to Approve or Reject/.test(d.content)), "no 'waiting for Josh' line for a card Autopilot took");
+  assert(pings.some((x) => /Autopilot took/.test(x.title) && /1 of 3/.test(x.body)), "push: " + JSON.stringify(pings));
+  const c2: any = await M.proposeAction(nvda9(), "watcher");
+  assert(c2.status === "paper_taken" && c2.plan.autopilot.on_plan === false && c2.plan.autopilot.n === 2, "NVDA was not in the plan → OFF PLAN: " + JSON.stringify(c2.plan.autopilot));
+  assert(T.otto_desk.some((d: any) => /⚠ OFF PLAN/.test(d.content)) && pings.some((x) => /OFF PLAN/.test(x.body)), "off-plan is said out loud");
+  const v: any = await (M as any).autopilotRoute(null, HOUSE9);
+  assert(v.on && v.trades.length === 2 && v.left === 1 && v.trades[0].on_plan === true && v.trades[1].on_plan === false && v.trades[0].state === "open", "view: " + JSON.stringify(v.trades));
+});
+
+Deno.test("v5.9 Autopilot limits: off by itself at the 3rd trade; the 4th card waits for Josh; it cannot be restarted past the limit", async () => {
+  ap9();
+  await (M as any).autopilotRoute({ on: true, author: "Ifoma" }, HOUSE9);
+  assert(T.otto_desk.some((d: any) => /No plan was made this morning/.test(d.content)), "empty plan is said plainly");
+  const a: any = await M.proposeAction(spyCard(), "watcher"), b: any = await M.proposeAction(nvda9(), "watcher"), c: any = await M.proposeAction(mu9(), "signals");
+  assert([a, b, c].every((x) => x.status === "paper_taken" && x.plan.autopilot.on_plan === false), "three taken, all off plan: " + [a, b, c].map((x) => x.status).join(","));
+  const st = apRow9();
+  assert(st.on === false && /trade limit \(3 trades a day\)/.test(st.off.reason) && st.off.by === "Otto", "off at the limit: " + JSON.stringify(st.off));
+  const off = T.otto_desk.find((d: any) => /🛬 Autopilot OFF/.test(d.content));
+  assert(off && /Autopilot took 3 practice trades/.test(off.content) && /OFF PLAN — still open/.test(off.content) && /wait for Josh's Approve or Reject again/.test(off.content), "recap in the off line: " + off?.content);
+  assert(pings.some((x) => /switched itself off/.test(x.title)), "push on auto-off");
+  const d: any = await M.proposeAction(spyPut9(), "watcher");
+  assert(d.status === "paper_wait" && !d.plan.autopilot, "4th waits for Josh: " + d.status);
+  let err = ""; try { await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9); } catch (e) { err = (e as Error).message; }
+  assert(/can't start: today already reached the trade limit/.test(err), "no restart past the limit: " + err);
+  const up: any = await (M as any).autopilotRoute({ cfg: { max_trades: 5 }, on: true, author: "Ifoma" }, HOUSE9);
+  assert(up.on === true && up.cfg.max_trades === 5 && up.left === 1 && up.trades.length === 4, "raising the number lets it start again (and the waiting card is the 4th): " + JSON.stringify(up.cfg) + " left " + up.left);
+  assert(T.otto_actions.find((r: any) => r.id === d.id).status === "paper_taken", "the card that was waiting is taken when it is switched on");
+});
+
+Deno.test("v5.9 Autopilot loss stop and last entry time: 2 losing trades or 3:00 PM switch it off; a later card waits for Josh", async () => {
+  ap9();
+  await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
+  const a: any = await M.proposeAction(spyCard(), "watcher"), b: any = await M.proposeAction(nvda9(), "watcher");
+  for (const x of [a, b]) T.otto_actions.find((r: any) => r.id === x.id).outcome = { state: "loss", pnl_est: -80 };
+  const c: any = await M.proposeAction(mu9(), "watcher");
+  assert(c.status === "paper_wait", "after 2 losses the next card is not taken: " + c.status);
+  assert(apRow9().on === false && /loss stop \(2 losing trades\)/.test(apRow9().off.reason), "off: " + JSON.stringify(apRow9().off));
+  assert(T.otto_desk.some((d: any) => /🛬 Autopilot OFF/.test(d.content) && /loss −\$80/.test(d.content) && /\(−\$160 on the 2 closed\)/.test(d.content)), "the recap carries the results");
+  // the clock: on at 2:50 PM, a card at 3:00 PM is not taken
+  ap9(); setNow("2026-10-06T18:50:00Z");
+  await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
+  setNow("2026-10-06T19:00:00Z");
+  const late: any = await M.proposeAction(spyCard(), "watcher");
+  assert(late.status === "paper_wait" && /last entry time \(3:00 PM ET\)/.test(apRow9().off.reason), "3:00 PM: " + late.status + " " + JSON.stringify(apRow9().off));
+  let err = ""; try { await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9); } catch (e) { err = (e as Error).message; }
+  assert(/last entry time/.test(err), "cannot start after the last entry time: " + err);
+  // the score tick switches it off too (nobody has to have the Desk open)
+  ap9(); setNow("2026-10-06T18:50:00Z");
+  await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
+  setNow("2026-10-06T19:01:00Z");
+  await M.scoreTick();
+  assert(apRow9().on === false && apRow9().off.by === "Otto", "score tick: " + JSON.stringify(apRow9().off));
+  // the next day it is off without anyone touching it
+  ap9(); await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9); setNow("2026-10-07T14:32:00Z");
+  assert((await (M as any).autopilotRoute(null, HOUSE9)).on === false, "a new day starts off");
+  assert((await M.proposeAction(spyCard(), "watcher")).status === "paper_wait", "and cards wait for Josh");
+});
+
+Deno.test("v5.9 Autopilot never touches: a card Baby J flagged weak, a LIVE card, the manual Order ticket", async () => {
+  ap9();
+  await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
+  const weak: any = spyCard(); weak.plan = { ...weak.plan, weak: "This is a chase — the bar already ran past the level." };
+  const w: any = await M.proposeAction(weak, "watcher");
+  assert(w.status === "paper_wait" && !w.plan.autopilot, "weak card is left for Josh: " + w.status);
+  assert(T.otto_desk.some((d: any) => /Autopilot left this one for Josh/.test(d.content) && /chase/.test(d.content)), "and it says why");
+  // LIVE: Jarvis's own ideas switched on to go live → pending, a human tap
+  ap9(); T.otto_settings = [{ key: "limits", value: { size_cap_on: false, kill_on: false, live_jarvis: true } }]; (M as any).clearCacheForTest();
+  await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
+  calls = [];
+  const live: any = await M.proposeAction(spyCard(), "watcher");
+  assert(live.status === "pending" && !live.plan.autopilot, "a LIVE card waits for a human: " + live.status);
+  assert(!calls.some((x) => x.tool === "place_option_order") && orders.length === 0, "nothing placed");
+  // the manual ticket is the trader's own
+  ap9();
+  await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
+  const tk: any = await M.proposeAction(spyCard(), HOUSE9, { manual: true });
+  assert(tk.status !== "paper_taken" && !tk.plan?.autopilot, "ticket untouched: " + tk.status);
+});
+
+Deno.test("v5.9 Autopilot plan: one AI read of the morning's conversation + the levels; a failed read falls back to the levels and says so; switching off (Ifoma) writes the recap", async () => {
+  ap9(); spyWatch9();
+  T.otto_desk.push({ id: 1, created_at: "2026-10-06T13:10:00Z", role: "user", author: "Josh", content: "I like MU puts under 1075 today and SPY calls if 778.60 holds." });
+  T.otto_desk.push({ id: 2, created_at: "2026-10-06T13:11:00Z", role: "assistant", author: "Jarvis", content: "Agreed. MU short under 1075, SPY long over 778.60." });
+  claudeScript = (body: any) => { assert(body.tool_choice?.name === "autopilot_plan" && /I like MU puts under 1075/.test(body.messages[0].content) && /SPY 778\.6 up/.test(body.messages[0].content), "plan prompt: " + JSON.stringify(body.messages[0].content).slice(0, 300));
+    return toolReply("autopilot_plan", { summary: "MU puts under 1075; SPY calls over 778.60.", items: [{ ticker: "mu", direction: "down", level: 1075 }, { ticker: "SPY", direction: "up", level: 778.6 }] }); };
+  const on: any = await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
+  assert(on.plan.items.length === 2 && on.plan.items[0].ticker === "MU" && on.plan.items[0].src === "chat" && on.plan.items[0].level === 1075 && /conversation/.test(on.plan.source) && !on.plan.error, "plan: " + JSON.stringify(on.plan));
+  claudeScript = null;
+  const m: any = await M.proposeAction(mu9(), "watcher"), n: any = await M.proposeAction(nvda9(), "watcher");
+  assert(m.plan.autopilot.on_plan === true && n.plan.autopilot.on_plan === false, "MU on plan, NVDA off plan");
+  const off: any = await (M as any).autopilotRoute({ on: false, author: "Ifoma" }, HOUSE9);
+  assert(off.on === false && off.off.by === "Ifoma" && /switched off by Ifoma/.test(off.off.reason) && off.trades.length === 2, "off: " + JSON.stringify(off.off));
+  assert(T.otto_desk.some((d: any) => /🛬 Autopilot OFF — switched off by Ifoma/.test(d.content) && /on plan — still open/.test(d.content) && /OFF PLAN — still open/.test(d.content)), "recap");
+  assert((await M.proposeAction(spyCard(), "watcher")).status === "paper_wait", "off again: cards wait for Josh");
+  // the AI read fails → the levels are the plan
+  ap9(); spyWatch9();
+  T.otto_desk.push({ id: 1, created_at: "2026-10-06T13:10:00Z", role: "user", author: "Josh", content: "MU puts today." });
+  claudeScript = () => new Error("claude HTTP 529 overloaded") as any;
+  const on2: any = await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
+  assert(on2.on && on2.plan.items.length === 1 && on2.plan.items[0].ticker === "SPY" && /529/.test(on2.plan.error), "fallback: " + JSON.stringify(on2.plan));
+  assert(T.otto_desk.some((d: any) => /could not read the conversation just now/.test(d.content)), "and the Desk says so");
+});
+
+Deno.test("v5.9 Autopilot numbers, the Scoreboard line and the pure helpers", async () => {
+  ap9();
+  for (const [cfg, re] of [[{ max_trades: 0 }, /Trades a day must be between 1 and 10/], [{ max_losses: 11 }, /Losing trades/], [{ last_entry: "16:10" }, /between 9:45 AM and 3:50 PM/]] as any[]) {
+    let err = ""; try { await (M as any).autopilotRoute({ cfg, author: "Ifoma" }, HOUSE9); } catch (e) { err = (e as Error).message; }
+    assert(re.test(err), "refused " + JSON.stringify(cfg) + ": " + err);
+  }
+  const v: any = await (M as any).autopilotRoute({ cfg: { max_trades: 2, max_losses: 1, last_entry: "14:30" }, author: "Ifoma" }, HOUSE9);
+  assert(v.cfg.max_trades === 2 && v.cfg.max_losses === 1 && v.cfg.last_entry_min === 870 && v.on === false, JSON.stringify(v.cfg));
+  assert(T.otto_desk.some((d: any) => /Autopilot limits set by Ifoma: 2 trades a day, off after 1 losing trade, no new trade from 2:30 PM ET/.test(d.content)), "limits line");
+  const S = (M as any).apStop, t = (st: string) => ({ outcome: st === "open" ? null : { state: st, pnl_est: -1 } });
+  assert(S({}, [], 600) === "" && /trade limit/.test(S({}, [t("open"), t("win"), t("open")], 600)) && /loss stop/.test(S({}, [t("loss"), t("loss")], 600)) && S({}, [t("loss"), t("win")], 600) === "", "apStop counts");
+  assert(/last entry/.test(S({}, [], 900)) && S({}, [], 899) === "" && S({ max_losses: 0 }, [t("loss"), t("loss")], 600) === "", "apStop clock, and 0 = loss stop off");
+  const OP = (M as any).apOnPlan;
+  assert(OP({ tv_symbol: "NASDAQ:MU", direction: "down" }, [{ ticker: "MU", direction: "down" }]) && !OP({ tv_symbol: "NASDAQ:MU", direction: "up" }, [{ ticker: "MU", direction: "down" }]) && OP({ tv_symbol: "NASDAQ:MU", direction: "up" }, [{ ticker: "mu", direction: "both" }]) && !OP({ tv_symbol: "NASDAQ:MU", direction: "up" }, []), "apOnPlan");
+  // the practice book: Autopilot on its own line, split on / off plan; Josh's trades separate
+  const mkA = (id: string, st: string, est: number, ap: any) => ({ id, status: "paper_taken", created_at: "2026-10-21T14:00:00Z", plan: { practice: true, ...(ap ? { autopilot: ap } : { josh_why: { setup: "x" } }) }, outcome: { state: st, pnl_est: est } });
+  const ps: any = M.practiceStats([mkA("1", "win", 120, { on_plan: true }), mkA("2", "loss", -70, { on_plan: false }), mkA("3", "loss", -40, { on_plan: false }), mkA("4", "win", 60, null)], { start: 4000, since: "2026-10-20T00:00:00Z" });
+  assert(ps.autopilot.n === 3 && ps.autopilot.est === 10 && ps.autopilot.on_plan.n === 1 && ps.autopilot.on_plan.est === 120 && ps.autopilot.off_plan.n === 2 && ps.autopilot.off_plan.losses === 2 && ps.autopilot.off_plan.est === -110, "autopilot line: " + JSON.stringify(ps.autopilot));
+  assert(ps.josh.n === 1 && ps.josh.est === 60 && ps.taken === 4 && ps.balance === 4070 && ps.overrides.n === 0, "Josh's own line and the book total: " + JSON.stringify(ps.josh) + " " + ps.balance);
+  const rows: any[] = M.scoreRows([mkA("1", "win", 120, { on_plan: true, why: { setup: "s" } }), mkA("2", "loss", -70, { on_plan: false }), mkA("4", "win", 60, null)] as any, {});
+  assert(rows[0].autopilot === "plan" && rows[0].ap_why === "s" && rows[1].autopilot === "off" && rows[2].autopilot === null && rows[0].override === false, "scoreboard rows: " + JSON.stringify(rows.map((r) => r.autopilot)));
+  // Jarvis is told the truth about what runs on its own
+  ap9();
+  assert(/Autopilot: OFF — every practice card waits for Josh/.test(await M.runningNow()), "running list, off");
+  await (M as any).autopilotRoute({ on: true, author: "Josh" }, HOUSE9);
+  assert(/Autopilot: ON \(switched on by Josh\) — the SERVER answers your new PRACTICE cards/.test(await M.runningNow()), "running list, on");
+});
+
+Deno.test("v5.9 Autopilot in a member's room: their own practice ideas are taken, their Order ticket is not; the house is not switched on by it", async () => {
+  ap9();
+  const MEM = "member9@example.com";
+  await (M as any).roomRunForTest(MEM, async () => {
+    const on: any = await (M as any).autopilotRoute({ on: true, author: "Jay" }, MEM);
+    assert(on.on === true && on.by === "Jay", "on in the room: " + JSON.stringify(on).slice(0, 200));
+    const tk: any = await M.proposeAction(spyCard(), MEM, { manual: true });
+    assert(tk.status === "paper_wait" && !tk.plan.autopilot, "a member's own ticket is a practice card that waits for them: " + tk.status);
+    const c: any = await M.proposeAction(nvda9(), "watcher");
+    assert(c.status === "paper_taken" && c.plan.autopilot && c.decided_by === "autopilot", "their Baby J idea is taken: " + c.status);
+  });
+  const rooms = T.otto_settings.find((r: any) => r.key === "autopilot")?.value?.rooms || {};
+  assert(rooms[MEM]?.on === true && !rooms[HOUSE9], "only the member's room is on: " + JSON.stringify(Object.keys(rooms)));
+  assert((await (M as any).autopilotRoute(null, HOUSE9)).on === false, "the house stays off");
+  assert((await M.proposeAction(spyPut9(), "watcher")).status === "paper_wait", "house cards still wait for Josh");
+});

@@ -483,7 +483,12 @@ body.dk-on::before,body.splash-off::before{display:none!important}
 /* v3.26: paper cards, where the idea came from, the kill-switch banner, Activity, Coaches Corner, the new Limits */
 .dk-act.st-paper{border:1.5px dashed #3a3f47;background:#111215;opacity:.9}.dk-act.st-paper .dk-act-h b{color:#b8bfc9;text-decoration:line-through;text-decoration-color:#646c78}
 .dk-paper{margin:6px 0 2px;font-size:13.5px;font-weight:600;color:#ffb08f}
-.stp-prac{background:#f0b429;color:#000}.dk-prac{margin:6px 0;padding:8px 10px;border:1px solid #5a4a14;background:#2a2410;border-radius:8px;font-size:12.5px;color:#f3dfa0}.dk-prac.ok{border-color:#1d5a3a;background:#10241a;color:#bfe9d0}.dk-act.st-paper_wait{border:1.5px solid #5a4a14}
+.stp-prac{background:#f0b429;color:#000}.stp-ap{background:#2a2410;color:#f0b429;border:1px solid #f0b429;margin-left:6px}.stp-offp{background:#3a1616;color:#ff9c9c;border:1px solid #a04040;margin-left:6px}
+.v4top .st.apon{border-color:#f0b429;color:#f0b429;background:#2a2410}
+.ap-big{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin:0 0 12px}.ap-big .dk-btn{padding:12px 20px;font-size:15px}.ap-big .dk-btn.on{background:#f0b429;color:#000}.ap-state{font-size:17px;font-weight:700}.ap-state.on{color:#f0b429}
+.ap-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}.ap-box{border:1px solid var(--rule);border-radius:10px;padding:10px 12px;min-width:0}.ap-box h5{margin:0 0 6px;font-size:11.5px;letter-spacing:.07em;text-transform:uppercase;color:var(--ink-3)}
+.ap-chip{display:inline-block;border:1px solid var(--rule);border-radius:999px;padding:2px 9px;margin:0 5px 5px 0;font-size:12.5px}.ap-tr{display:flex;gap:8px;align-items:baseline;justify-content:space-between;font-size:13px;padding:4px 0;border-top:1px solid var(--rule)}.ap-tr:first-of-type{border-top:0}
+.ap-num{display:flex;align-items:center;justify-content:space-between;gap:10px;margin:6px 0;font-size:13px}.ap-num input{width:92px;background:var(--surface-3);color:var(--ink);border:1px solid var(--rule);border-radius:7px;padding:6px 8px;font:inherit}.ap-num input[type=time]{width:132px}.dk-prac{margin:6px 0;padding:8px 10px;border:1px solid #5a4a14;background:#2a2410;border-radius:8px;font-size:12.5px;color:#f3dfa0}.dk-prac.ok{border-color:#1d5a3a;background:#10241a;color:#bfe9d0}.dk-act.st-paper_wait{border:1.5px solid #5a4a14}
 .stp{display:inline-block;font:800 11px var(--body);letter-spacing:.08em;padding:4px 9px;border-radius:6px;margin:0 8px 6px 0}.stp-live{background:var(--up);color:#000}.stp-paper{background:#3a3f47;color:#e6e9ed}
 .og{display:inline-block;font:700 10.5px var(--body);letter-spacing:.05em;padding:3px 8px;border-radius:999px;margin:0 0 6px;text-transform:uppercase}
 .og-coach_call{background:#16305c;color:#9cc3ff}.og-coach_level,.og-coach_post{background:#3a2a12;color:#ffc27a}.og-coach_against{background:#3a1608;color:#ff8a5c}.og-jarvis{background:var(--surface-3);color:#c7cdd6}
@@ -2750,7 +2755,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.7.1";
+const BUILD="5.9.0";
 // v5.7.1 (9 Nov): the brain has three settings — label + the next one in the cycle. Server: winApi("config_set",{model}) accepts opus | sonnet55 | sonnet.
 const WIN_BRAIN={opus:"Opus 5.5",sonnet55:"Sonnet 5.5",sonnet:"Sonnet 4.6"},WIN_BRAIN_NEXT={opus:"sonnet55",sonnet55:"sonnet",sonnet:"opus"};
 function winBrainLabel(m){return WIN_BRAIN[m]||WIN_BRAIN.opus}
@@ -3447,7 +3452,7 @@ async function dkPanel(force){
   try{DK.panel=await dkApi("panel")}catch(e){DK.panel={error:e.message}}
   (DK.panel.pending||[]).forEach(a=>DK.acts[a.id]=a);
   dkRenderStrip();dkRenderLeft();dkRenderRight();
-  dkJasonLoad();laySync();sgLoad();dkWatchLoad();dkTradeLoad();
+  dkJasonLoad();laySync();sgLoad();dkWatchLoad();dkTradeLoad();apLoad();
 }
 // v3.7: today's Jason posts (feed on the right, levels on the left)
 async function dkJasonLoad(){
@@ -3650,16 +3655,17 @@ function dkCard(a){
   const tag={pending:"near",running:"near",paper_wait:"near",paper_taken:"ok",done:"ok",failed:"bad",paper:"bad"}[st]||"";
   const label={pending:"needs your approval",running:"running…",done:"done",failed:"failed",rejected:"rejected",expired:"expired — ask again for fresh prices",paper:"paper · practice only",paper_wait:"practice · needs Josh's approval",paper_taken:"practice trade taken"}[st]||st;
   const stp=!(a.plan||a.exit)?"":st==="paper_wait"||st==="paper_taken"?`<span class="stp stp-prac">PRACTICE · NO REAL MONEY</span>`:st==="paper"?`<span class="stp stp-paper">PAPER · PRACTICE ONLY</span>`:`<span class="stp stp-live">LIVE · REAL MONEY</span>`;
+  const apS=a.plan&&a.plan.autopilot?`<span class="stp stp-ap">AUTOPILOT</span>${a.plan.autopilot.on_plan?"":`<span class="stp stp-offp">OFF PLAN</span>`}`:"";   // v5.9
   const og=a.plan&&a.plan.origin?`<div class="og og-${esc(a.plan.origin)}">${esc(OG_LABEL[a.plan.origin]||a.plan.origin)}</div>`:"";
   const pc=st==="paper"?(a.checks||[]).find(x=>x.paper):null;
   const prx=st==="paper_wait"?(a.checks||[]).find(x=>x.practice):null;
   const pf=st==="paper_taken"&&a.plan&&a.plan.paper_fill?a.plan.paper_fill:null;
   const who=a.decided_by?` <span class="mut" style="font-size:11px">· ${esc(a.decided_by.split("@")[0])} ${dkTime(a.decided_at)}</span>`:"";
   return `<div class="dk-act st-${esc(st)}" data-act="${esc(a.id)}">
-    ${stp}${og}<div class="dk-act-h"><b>${esc(a.title)}</b><span><span class="dk-tag ${tag}">${esc(label)}</span>${who}</span></div>
+    ${stp}${apS}${og}<div class="dk-act-h"><b>${esc(a.title)}</b><span><span class="dk-tag ${tag}">${esc(label)}</span>${who}</span></div>
     ${pc?`<div class="dk-paper">${esc(String(pc.text).replace(/^AUTO-REJECTED · /,""))}</div><div class="mut" style="font-size:12px">Shown and scored. ${/kill switch/i.test(pc.text)?"The kill switch is the one reason a card can't be answered.":/size cap/i.test(pc.text)?'Your own ticket over the cap — <a href="#" data-openlim="1">change the cap in Settings</a>.':"This one can't be answered for the reason above."}</div>`:""}
     ${prx?`<div class="dk-prac">${esc(prx.text)}<br><span class="mut">If you approve, the pretend fill is the option's asking price at the moment you tap. Nothing is sent to Robinhood. It only counts in the score if you approve it.</span></div>`:""}
-    ${pf?`<div class="dk-prac ok">Josh approved it${pf.at?" at "+dkTime(pf.at):""}. Pretend fill ${pf.ask!=null?"<b>$"+(+pf.ask).toFixed(2)+"</b> (ask)":"at the card's price"}${pf.underlying?" · "+esc(String(a.plan.tv_symbol||"").split(":").pop()||"")+" "+pf.underlying:""}. Scored from that moment; exits are the card's own rules (wrong-if, TP1${a.plan.tp1_card!=null?" — <b>Josh's target "+esc(String(a.plan.tp1))+"</b>, the card said "+esc(String(a.plan.tp1_card)):""}, 3:50 PM). ${pf.note?esc(pf.note):""}</div>`:""}
+    ${pf?`<div class="dk-prac ok">${a.plan.autopilot?"<b>Autopilot</b> (Baby J) took it":"Josh approved it"}${pf.at?" at "+dkTime(pf.at):""}. Pretend fill ${pf.ask!=null?"<b>$"+(+pf.ask).toFixed(2)+"</b> (ask)":"at the card's price"}${pf.underlying?" · "+esc(String(a.plan.tv_symbol||"").split(":").pop()||"")+" "+pf.underlying:""}. Scored from that moment; exits are the card's own rules (wrong-if, TP1${a.plan.tp1_card!=null?" — <b>Josh's target "+esc(String(a.plan.tp1))+"</b>, the card said "+esc(String(a.plan.tp1_card)):""}, 3:50 PM). ${pf.note?esc(pf.note):""}${a.plan.autopilot&&a.plan.autopilot.why?`<br><b>Baby J's why:</b> ${esc(String(a.plan.autopilot.why.setup||"").slice(0,240))} <span class="mut">Kills it: ${esc(String(a.plan.autopilot.why.kills||""))}</span>`:""}</div>`:""}
     ${pf&&a.plan.why_pending&&!a.plan.josh_why?`<div class="dk-warnbox">⚠ <b>No why yet.</b> You are in; the trade counts either way. After 5 minutes it is scored as an override. <button class="dk-btn go" data-why="1" style="margin-left:8px">Answer your why</button></div>`:""}
     ${dkGuard(a)}
     ${a.summary?`<pre class="dk-sum">${esc(a.summary)}</pre>`:""}
@@ -4326,7 +4332,13 @@ function sbPractice(){
   return `<div class="sb-prac"><h3>Practice book <span class="mut" style="font-weight:400;font-size:13px">· since ${esc(sbMD(sbEt(p.since)))}</span></h3>
     <div class="sb-note" style="margin:0">$${p.start.toLocaleString()} → <b class="${sbC(net)}" style="font-family:var(--mono);font-size:18px">$${Math.round(p.balance).toLocaleString()}</b> <span class="${sbC(net)}">(${sbM(net,true)})</span>${p.scoring?` · ${p.scoring} still scoring`:""}</div>
     <div class="sb-tiles"><div><b>${p.offered}</b><span>cards offered</span></div><div><b class="up">${p.answered}</b><span>answered · ${p.taken} taken, ${p.rejected} rejected</span></div><div><b class="${p.expired?"dn":""}">${p.expired}</b><span>expired · no answer</span></div></div>
-    <div class="sb-note" style="margin-top:8px"><b>Overrode Baby J:</b> ${ov.n||0} trade${ov.n===1?"":"s"}${ov.n?` · ${ov.wins} W / ${ov.losses} L · <b class="${sbC(ov.est)}">${sbM(ov.est,true)}</b>`:""}. <b>Whys written:</b> ${p.whys||0} of ${p.answered}. Expired cards count against the Friday report card.</div></div>`;
+    <div class="sb-note" style="margin-top:8px"><b>Overrode Baby J:</b> ${ov.n||0} trade${ov.n===1?"":"s"}${ov.n?` · ${ov.wins} W / ${ov.losses} L · <b class="${sbC(ov.est)}">${sbM(ov.est,true)}</b>`:""}. <b>Whys written:</b> ${p.whys||0} of ${p.answered-((p.autopilot&&p.autopilot.n)||0)}. Expired cards count against the Friday report card.</div>${sbAuto(p)}</div>`;
+}
+/* v5.9: trades Autopilot took (Baby J alone) on their own line, split on plan / off plan, beside the ones Josh approved himself */
+function sbAuto(p){
+  const a=p.autopilot;if(!a||!a.n)return "";
+  const g=(x,l)=>`${l}: <b>${x.n}</b>${x.n?` · ${x.wins} W / ${x.losses} L · <b class="${sbC(x.est)}">${sbM(x.est,true)}</b>`:""}`;
+  return `<div class="sb-note" style="margin-top:8px"><span class="sb-ov" style="margin-left:0">Autopilot</span> ${g(a,"Baby J alone")} &nbsp;·&nbsp; ${g(a.on_plan,"on plan")} &nbsp;·&nbsp; ${g(a.off_plan,"off plan")}<br>${g(p.josh||{n:0},"Josh approved himself")}. Autopilot trades are practice only and never count as Josh's overrides or whys.</div>`;
 }
 function sbLane(k,title,sub,t,extra){
   if(!t.n)return `<div class="sb-lane ${k}"><h2>${title}</h2><div class="sub">${sub}</div><div class="sb-net mut">—</div><div class="sb-netl">No trades counted</div>${extra||""}</div>`;
@@ -4396,7 +4408,7 @@ function sbList(m,d){
     const items=rows.map(x=>{const real=x.r.status==="done",u=x.usd;if(u!=null)run+=(real?0:u);
       const o=u==null?"o":u>0?"w":u<0?"l":"f",lab=u==null?(real?"OPEN":"SCORING"):u>0?"WIN":u<0?"LOSS":"FLAT";
       const w=x.r.why,wl=w?`Why: ${esc(w.setup||"")}${w.kills?" · Kills: "+esc(w.kills):""}`:"",xl=x.r.exit_why?` · Out: ${esc(x.r.exit_why)}`:"",hc=x.r.hand_close?` · <b>${esc(typeof x.r.hand_close==="string"?x.r.hand_close:"Josh")} closed it</b>${x.r.rule_state?` · what-if if the rules had run it: ${esc(String(x.r.rule_state).toUpperCase())}${x.r.rule_est!=null?" "+sbM(sbN(x.r.rule_est),true):""}`:" · what-if: still scoring"}`:"";
-      return `<div class="sb-li" style="flex-wrap:wrap">${chip(o,lab)}<div class="t"><b>${esc(sbTitle(x.r.title))}</b>${x.r.override?`<span class="sb-ov" title="${esc(x.r.override_read||"")}">Overrode Baby J</span>`:""}<span>${esc(winET(x.r.at))} · ${esc(x.r.source||"desk")}${real?" · <b style='color:var(--warn)'>REAL MONEY</b>":""}</span></div>
+      return `<div class="sb-li" style="flex-wrap:wrap">${chip(o,lab)}<div class="t"><b>${esc(sbTitle(x.r.title))}</b>${x.r.override?`<span class="sb-ov" title="${esc(x.r.override_read||"")}">Overrode Baby J</span>`:""}${x.r.autopilot?`<span class="sb-ov" title="${esc(x.r.ap_why||"")}">Autopilot${x.r.autopilot==="off"?" · off plan":""}</span>`:""}<span>${esc(winET(x.r.at))} · ${esc(x.r.source||"desk")}${real?" · <b style='color:var(--warn)'>REAL MONEY</b>":""}</span></div>
         <div class="amt ${sbC(u)}">${u==null?"—":sbM(u,true)}${u!=null&&!real?`<span class="run">day so far ${sbM(run,true)}</span>`:""}</div>${wl||xl||hc?`<div class="sb-why">${wl}${xl}${hc}</div>`:x.r.practice?`<div class="sb-why mut">No why recorded (before the why gate).</div>`:""}</div>`}).reverse();
     html=items.join("")||`<div class="sb-note">No Josh + Baby J trades on this day.</div>`;
     if(day.X.length)html+=`<details class="sb-nt"><summary>Not taken (${day.X.length}): rejected, expired or auto-rejected cards, never opened, not in any total</summary>${day.X.slice().sort((a,b)=>String(b.r.at).localeCompare(String(a.r.at))).map(x=>
@@ -7022,7 +7034,51 @@ const V4_ICON={desk:'<path d="M4 5h16v10H9l-5 4z"/><path d="M8 9h8M8 12h5"/>',sc
 const V4_TINT={desk:["#F5C451","#B57F1C"],scoreboard:["#2EE59D","#0E8F5C"],prep:["#FFB547","#B86A0E"],journal:["#4FB6FF","#1F5FA8"],playbook:["#3FD6C7","#147F76"],winston:["#9B8CFF","#5A48C9"],jason:["#FF9F5C","#C25A17"],quiz:["#F26BA6","#A8336B"],homework:["#5CA8FF","#2457B5"],charts:["#7FD1FF","#2B6FB3"],market:["#B0BEC5","#546E7A"],help:["#8A94A6","#3A4252"],classic:["#8A94A6","#3A4252"],settings:["#8A94A6","#3A4252"],customize:["#8A94A6","#3A4252"],watch:["#2EE59D","#0E8F5C"],list:["#F5C451","#B57F1C"],sun:["#FFB547","#B86A0E"]};
 V4_ICON.watchlist=V4_ICON.list;V4_ICON.watcher=V4_ICON.watch;V4_ICON.morning=V4_ICON.sun;V4_TINT.watchlist=V4_TINT.list;V4_TINT.watcher=V4_TINT.watch;V4_TINT.morning=V4_TINT.sun;V4_TINT.more=["#B0BEC5","#546E7A"];V4_ICON.more='<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>';
 const v4Svg=(k)=>`<svg viewBox="0 0 24 24" style="--c1:${(V4_TINT[k]||V4_TINT.help)[0]};--c2:${(V4_TINT[k]||V4_TINT.help)[1]}">${V4_ICON[k]||V4_ICON.help}</svg>`;
+/* ===================================================================== v5.9 (11 Nov 2026) — AUTOPILOT for Baby J
+   Josh or Ifoma switches it on (top bar → Autopilot). While it is on the SERVER answers Baby J's new practice cards; this
+   file only shows the state, the plan, the trades and the three numbers. Practice only: a LIVE card still needs a human tap. */
+const AP={s:null,busy:false};
+async function apLoad(){if(typeof DK==="undefined"||DK.locked)return;try{AP.s=await dkApi("autopilot")}catch(e){}try{v4TopDraw()}catch(e){}}
+setInterval(()=>{try{if(typeof DK!=="undefined"&&DK.open&&!DK.locked&&document.visibilityState==="visible")apLoad()}catch(e){}},60e3);
+const apMin=m=>{const h=Math.floor(m/60),mm=m%60;return `${((h+11)%12)+1}:${String(mm).padStart(2,"0")} ${h<12?"AM":"PM"}`};
+const apHM=m=>`${String(Math.floor(m/60)).padStart(2,"0")}:${String(m%60).padStart(2,"0")}`;
+function apBody(){
+  const s=AP.s;if(!s)return `<div class="mut">Loading Autopilot…</div>`;
+  const c=s.cfg,pl=s.plan,tr=s.trades||[],sum=tr.reduce((x,t)=>x+(t.est||0),0),closed=tr.filter(t=>t.est!=null).length;
+  const stopLine=`${c.max_trades} trade${c.max_trades===1?"":"s"}, ${c.max_losses?c.max_losses+" losing trade"+(c.max_losses===1?"":"s")+", ":""}or ${apMin(c.last_entry_min)} ET`;
+  const head=s.on?`<span class="ap-state on">ON</span><span>since ${esc(dkTime(s.at))} · switched on by <b>${esc(s.by||"")}</b> · ${tr.length} of ${c.max_trades} trades taken</span>`
+    :`<span class="ap-state">OFF</span><span class="mut">${s.off?`${esc(s.off.reason)} · ${esc(dkTime(s.off.at))}`:"Every practice card waits for Josh's Approve or Reject."}</span>`;
+  const plan=!pl?`<span class="mut">The plan is written the moment Autopilot is switched on: today's Watcher levels, Josh's homework levels and this morning's Desk conversation.</span>`
+    :!(pl.items||[]).length?`<span class="mut">No plan was made this morning, so every Autopilot trade is marked OFF PLAN.</span>`
+    :(pl.items.map(x=>`<span class="ap-chip"><b>${esc(x.ticker)}</b> ${x.direction==="up"?"▲ calls":x.direction==="down"?"▼ puts":"▲▼ either way"}${x.level?" · "+esc(String(x.level)):""}</span>`).join("")+(pl.summary?`<div style="font-size:13px;margin-top:4px">${esc(pl.summary)}</div>`:"")+(pl.error?`<div class="mut" style="font-size:12px;margin-top:4px">Baby J could not read the conversation just now, so the plan is the levels only.</div>`:""));
+  const trades=!tr.length?`<span class="mut">None yet today.</span>`:tr.map(t=>`<div class="ap-tr"><span><b>${esc(t.title)}</b> ${t.on_plan?`<span class="mut">· on plan</span>`:`<span class="stp stp-offp" style="margin-left:4px">OFF PLAN</span>`}<br><span class="mut" style="font-size:12px">${esc(dkTime(t.at))}${t.fill!=null?" · filled $"+(+t.fill).toFixed(2):""} · ${esc(String(t.why||"").slice(0,120))}</span></span><b class="${t.est==null?"":t.est>=0?"up":"dn"}" style="white-space:nowrap">${t.state==="open"?"open":t.est==null?esc(t.state):(t.est>=0?"+$":"−$")+Math.abs(Math.round(t.est))}</b></div>`).join("")+(closed?`<div class="ap-tr"><span class="mut">Closed so far</span><b class="${sum>=0?"up":"dn"}">${sum>=0?"+$":"−$"}${Math.abs(Math.round(sum))}</b></div>`:"");
+  return `<div class="ap-big">${head}<button class="dk-btn ${s.on?"sec":"on"}" id="apToggle" style="margin-left:auto">${s.on?"Switch Autopilot OFF":"Switch Autopilot ON"}</button></div>
+    <div class="mut" style="font-size:13px;margin:0 0 12px">While it is on, Baby J answers his own <b>practice</b> cards: filled at the asking price, his own why on every trade, exits by the card's rules. It stops by itself at ${stopLine}. A real-money card still waits for a human tap, and a card Baby J flags weak is left for Josh.</div>
+    <div class="ap-grid"><div class="ap-box"><h5>This morning's plan</h5>${plan}</div>
+    <div class="ap-box"><h5>Autopilot trades today</h5>${trades}</div>
+    <div class="ap-box"><h5>The three numbers</h5>
+      <label class="ap-num">Trades a day<input id="apN1" type="number" min="1" max="10" value="${c.max_trades}"></label>
+      <label class="ap-num">Off after this many losing trades (0 = no stop)<input id="apN2" type="number" min="0" max="10" value="${c.max_losses}"></label>
+      <label class="ap-num">No new trade from (ET)<input id="apN3" type="time" min="09:45" max="15:50" value="${apHM(c.last_entry_min)}"></label>
+      <div style="text-align:right;margin-top:8px"><button class="dk-btn sec" id="apSave">Save numbers</button></div></div></div>`;
+}
+function apPop(){
+  const draw=()=>v4Open(v4Ph(null,"Autopilot","Baby J trades the practice book while Josh is away","linear-gradient(135deg,#2a2410,#0d1016)"),apBody(),o=>{
+    const tg=o.querySelector("#apToggle");
+    if(tg)tg.addEventListener("click",async()=>{
+      if(AP.busy)return;AP.busy=true;const on=!(AP.s&&AP.s.on);tg.disabled=true;tg.textContent=on?"Reading this morning's plan…":"Switching off…";
+      try{AP.s=await dkApi("autopilot",{on,author:dkWho()});toast(on?"Autopilot is ON — Baby J takes practice trades himself":"Autopilot is OFF — cards wait for Josh");v4TopDraw();draw();try{dkPoll()}catch(e){}}
+      catch(e){toast(String(e.message||e).slice(0,160));tg.disabled=false;tg.textContent=on?"Switch Autopilot ON":"Switch Autopilot OFF"}
+      AP.busy=false});
+    const sv=o.querySelector("#apSave");
+    if(sv)sv.addEventListener("click",async()=>{
+      try{AP.s=await dkApi("autopilot",{cfg:{max_trades:+o.querySelector("#apN1").value,max_losses:+o.querySelector("#apN2").value,last_entry:o.querySelector("#apN3").value},author:dkWho()});toast("Autopilot numbers saved");v4TopDraw();draw()}
+      catch(e){toast(String(e.message||e).slice(0,160))}});
+  });
+  draw();apLoad().then(()=>{if($("#v4ov")&&$("#apToggle")&&!AP.busy)draw()});
+}
 function v4Go(k){
+  if(k==="autopilot")return apPop();
   if(k==="watchlist")return v4Pop("watchlist");
   if(k==="watcher")return v4Pop("watcher");
   if(k==="morning")return v4Pop("morning");
@@ -7035,12 +7091,12 @@ function v4TopBuild(){
   const t=document.createElement("div");t.id="v4top";t.className="v4top";
   t.innerHTML=`<div class="mk"></div><div class="nm"><b>OTTO</b><small>Trader · The Desk</small></div>
     <div class="mid"><button data-v4go="watchlist">${v4Svg("list")}Watchlist</button><button data-v4go="watcher">${v4Svg("watch")}Watcher</button><button data-v4go="morning">${v4Svg("sun")}Morning read</button><button data-v4go="journal">${v4Svg("journal")}Journal</button></div>
-    <div class="r"><span class="st" id="v4w" title="The Desk's level watcher (Josh + Baby J cards) — runs 9:30 to 4:00"><i></i>Levels</span><span class="st q2" id="v4wn" style="display:none;white-space:nowrap" title="Winston waits until 9:30. Tap to wake him early: he reads the coach's posts and plans — no orders."><i class="off"></i>Winston</span><span class="st" id="v4tv" data-set="1" title="TradingView"><i></i>TradingView</span><span class="st" id="v4rh" data-set="1" title="Robinhood"><i></i>Robinhood</span><span class="st q2" id="v4sw" title="Josh's signal watcher — the Discord watcher on Ifoma's PC"><i class="off"></i>Watcher</span><span class="st q" id="v4clock"></span><span class="who"><span class="av" id="v4av">J</span><span id="v4whoSlot"></span><span id="v4name" data-raw></span></span><button class="gear" id="v4gear" aria-label="Settings" hidden></button></div>`;
+    <div class="r"><span class="st" id="v4w" title="The Desk's level watcher (Josh + Baby J cards) — runs 9:30 to 4:00"><i></i>Levels</span><span class="st" id="v4ap" style="white-space:nowrap" title="Autopilot: Baby J answers his own practice cards while Josh is away. Practice only."><i class="off"></i>Autopilot</span><span class="st q2" id="v4wn" style="display:none;white-space:nowrap" title="Winston preps by himself at about 8:41 and 9:21 AM. Tap to run a prep now: he reads the coach's posts and plans — no orders."><i class="off"></i>Winston</span><span class="st" id="v4tv" data-set="1" title="TradingView"><i></i>TradingView</span><span class="st" id="v4rh" data-set="1" title="Robinhood"><i></i>Robinhood</span><span class="st q2" id="v4sw" title="Josh's signal watcher — the Discord watcher on Ifoma's PC"><i class="off"></i>Watcher</span><span class="st q" id="v4clock"></span><span class="who"><span class="av" id="v4av">J</span><span id="v4whoSlot"></span><span id="v4name" data-raw></span></span><button class="gear" id="v4gear" aria-label="Settings" hidden></button></div>`;
   dk.insertBefore(t,dk.firstChild);
   const who=$("#dkWho");if(who)who.addEventListener("change",()=>{$("#v4av").textContent=(who.value||"J")[0]});
   t.querySelectorAll("[data-v4go]").forEach(b=>b.addEventListener("click",()=>v4Go(b.dataset.v4go)));
   t.querySelector("#v4gear").addEventListener("click",openSettings);
-  t.querySelector("#v4w").addEventListener("click",()=>v4Pop("watcher"));t.querySelector("#v4sw").addEventListener("click",e=>{e.stopPropagation();v4SwTip(e.currentTarget)});t.querySelectorAll("[data-set]").forEach(x=>x.addEventListener("click",openSettings));
+  t.querySelector("#v4w").addEventListener("click",()=>v4Pop("watcher"));t.querySelector("#v4ap").addEventListener("click",apPop);t.querySelector("#v4sw").addEventListener("click",e=>{e.stopPropagation();v4SwTip(e.currentTarget)});t.querySelectorAll("[data-set]").forEach(x=>x.addEventListener("click",openSettings));
   // ★ Menu and ⚙ Settings live at the bottom, next to + Chart and Order ticket
   // v4.2: ★ Menu and ⚙ Settings both live on the rail (Settings at the bottom, where the arrow pointed); the bottom bar is + Chart · Order ticket · ask · Send
   // the ★ Menu on the rail — opens the launcher with everything
@@ -7068,6 +7124,7 @@ function v4TopDraw(){
   const tvq=p.tv_quota_until&&p.tv_quota_until>Date.now();dot($("#v4tv"),c.tv&&!tvq,p.quotes_error||tvq,`TradingView${p.tv_calls!=null?` · ${p.tv_calls}`:""}${tvq?" · quota — back 8 PM":""}`);
   const tvEl=$("#v4tv");if(tvEl)tvEl.title=tvq?"TradingView's daily tool-call quota is used up; alerts and the watchlist are saved copies until midnight UTC (8 PM ET). Prices come from Yahoo and Robinhood.":`TradingView tool calls today: ${p.tv_calls==null?"—":p.tv_calls} (alerts and watchlist are shared copies, refreshed every 10 min)`;dot($("#v4rh"),c.rh,p.rh_error,"Robinhood");
   const W=DK.watch,won=W&&W.clock==="open",wn=W?(W.rows||[]).filter(r=>r.status==="watching").length:0;dot($("#v4w"),won,W&&W.error,`Levels${W?(won?` · ${wn}`:W.clock==="pre"?" · from 9:30":" · off"):""}`);
+  const apE=$("#v4ap");if(apE){const s9=AP.s;apE.classList.toggle("apon",!!(s9&&s9.on));apE.innerHTML=`<i class="${s9&&s9.on?"":"off"}"></i>Autopilot${s9?(s9.on?` · ON · ${s9.trades.length}/${s9.cfg.max_trades}`:" · off"):""}`}   // v5.9
   const ck0=$("#v4clock");if(ck0)ck0.title=`v${BUILD}`;
   const n=nyNow(),open=!["Sat","Sun"].includes(n.wd)&&n.min>=570&&n.min<960,pre=!["Sat","Sun"].includes(n.wd)&&n.min>=240&&n.min<570;
   const d=new Date().toLocaleDateString("en-US",{weekday:"short",day:"numeric",month:"short",timeZone:"America/New_York"}),tm=new Date().toLocaleTimeString("en-US",{hour:"numeric",minute:"2-digit",timeZone:"America/New_York"});
@@ -7076,7 +7133,7 @@ function v4TopDraw(){
   // v4.8.6: the manual "Winston ON early" switch — only before the open
   const wn2=$("#v4wn");if(wn2){wn2.style.display=pre&&wide?"flex":"none";
     if(pre&&wide){if(!WIN.j&&!WIN.topLoad){WIN.topLoad=1;winApi("state").then(j=>{WIN.j=j;v4TopDraw()}).catch(()=>{}).then(()=>{WIN.topLoad=0})}
-      const on=winPrepActive(WIN.j);wn2.innerHTML=`<i class="${on?"":"off"}"></i>${on?"Winston · prepping":"Winston · off till 9:30 — tap to prep"}`}}
+      const on=winPrepActive(WIN.j);wn2.innerHTML=`<i class="${on?"":"off"}"></i>${on?"Winston · prepping":"Winston · preps himself 8:41 + 9:21 — tap to prep now"}`}}
 
   t.querySelectorAll(".mid button[data-v4go]").forEach(b=>b.classList.toggle("on",DK.view===b.dataset.v4go));
 }
@@ -7084,7 +7141,7 @@ function v4Launcher(){
   v4Close();const o=document.createElement("div");o.id="v4ov";o.className="v4launch";
   const it=(k,l,s)=>`<button data-v4go="${k}" class="${DK.view===k?"on":""}">${v4Svg(k)}<span>${l}${s?`<small>${s}</small>`:""}</span></button>`;
   o.innerHTML=`<div class="v4lp"><h4>Go to</h4><div class="g">${it("desk","Desk","Jarvis · cards · signals")}${it("scoreboard","Scoreboard","Josh + Baby J vs Winston")}${it("prep","Pre-market","Prep · Market · Night Charts")}${it("homework","Homework","the after-close read")}${it("winston","Winston","the paper trader")}${it("playbook","Playbook","the Otto Rules")}${it("jason","Calls","the coach's calls")}${it("quiz","Quiz","five questions, graded")}${it("journal","Journal","every trade, with its reason")}${it("charts","Night Charts","9 charts, ready by 7")}${it("more","Everything else","signals today · levels · brain")}${it("help","Help","")}</div>
-    <h4 class="s">Desk tools</h4><div class="g">${it("watchlist","Watchlist","Treasure Hunt")}${it("watcher","Watcher","levels · every minute")}${it("morning","Morning read","the three inputs")}${it("customize","Customize","move the cards")}</div>
+    <h4 class="s">Desk tools</h4><div class="g">${it("watchlist","Watchlist","Treasure Hunt")}${it("watcher","Watcher","levels · every minute")}${it("autopilot","Autopilot","Baby J trades alone")}${it("morning","Morning read","the three inputs")}${it("customize","Customize","move the cards")}</div>
     <h4 class="s">App</h4><div class="g">${it("settings","Settings","accounts · limits · push")}<button data-v4go="look">${v4Svg("look")}<span>Look<small>${V4.on?"new (v4) · switch to Classic":"classic · switch to new"}</small></span></button></div></div>`;
   o.addEventListener("click",e=>{if(e.target===o)v4Close()});
   o.querySelectorAll("[data-v4go]").forEach(b=>b.addEventListener("click",()=>{v4Close();v4Go(b.dataset.v4go)}));

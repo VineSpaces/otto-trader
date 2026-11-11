@@ -1575,6 +1575,12 @@ export async function proposeAction(input: any, who: string, opts: { manual?: bo
     }
   }
   if (rows?.[0]?.status === "pending" && who !== "signals" && who !== "alert" && who !== "watcher") await markPinged([rows[0].id]), await notify("card", `🃏 Card waiting: ${String(rows[0].title).slice(0, 80)}`, "Tap to open the Desk and Approve or Reject (cards expire in 20 minutes).");
+  // v5.9: Autopilot — Baby J answers his own practice card (never a LIVE card, never the manual Order ticket)
+  if (rows?.[0]?.status === "paper_wait" && !opts.manual) {
+    let apTaken: any = null;
+    try { apTaken = await autopilotTake(rows[0]); } catch (e) { console.error("autopilot", e); }
+    if (apTaken) { await markPinged([rows[0].id]).catch(() => {}); return apTaken; }
+  }
   if (rows?.[0]?.status === "paper_wait") {
     await markPinged([rows[0].id]);
     await logDesk("system", "Otto", `📝 Practice card: ${rows[0].title} — waiting for Josh to Approve or Reject (20 minutes). Practice only: nothing is sent to Robinhood.`, rows[0].id);
@@ -1651,13 +1657,14 @@ export async function practiceOn(a: any, decision: string, who: string, why: any
   const fill = { ask, delta, underlying: under, at: now, by: who, note: note.trim() || null };
   // v3.41: the v3.39 override tag applies to practice approvals too (the practice book's "Overrode Baby J" line reads it)
   const weakRead = overrideRead(a);                                          // v4.2.3: only a real No Edge / Choppy / chase flag counts as an override
-  const plan = { ...(a.plan || {}), paper_fill: fill, ...(why_ok ? { josh_why: why_ok, why_pending: false } : { why_pending: true }),
-    tp_check: tpCheck(a.plan, under), ...(weakRead ? { override: true, override_read: weakRead } : {}) };
+  const ap = opts?.autopilot || null;                                       // v5.9: Baby J took it himself (Autopilot) — his why, never Josh's
+  const plan = { ...(a.plan || {}), paper_fill: fill, ...(ap ? { autopilot: { ...ap, at: now }, why_pending: false } : why_ok ? { josh_why: why_ok, why_pending: false } : { why_pending: true }),
+    tp_check: tpCheck(a.plan, under), ...(weakRead && !ap ? { override: true, override_read: weakRead } : {}) };
   const r = await left({ status: "paper_taken", decided_by: who, decided_at: now, plan, outcome: null });
   if (!r?.[0]) return publicAction((await db("otto_actions?id=eq." + id + "&select=*"))[0] || a);
   await activity("card", `Approved (practice): ${a.title}. Pretend fill ${ask != null ? "$" + ask.toFixed(2) : "unknown"} by ${who.split("@")[0]}`, who.split("@")[0]);
-  await logDesk("system", "Otto", `✅ Practice trade taken: ${a.title}. Pretend fill ${ask != null ? "$" + ask.toFixed(2) + " (ask)" : "at the card's price"}${under != null ? ` (${tk} ${under})` : ""}, approved by ${who}${fillNow ? " at the tap" : ""}. ${why_ok ? `Why: "${why_ok.setup.slice(0, 120)}" · Kills it: ${why_ok.kills.slice(0, 80)}. ` : "Why: not answered yet. "}${plan.tp_check?.close ? `⚠ The card's target ${a.plan?.tp1} is only $${plan.tp_check.dist} from this fill. ` : ""}${note}Nothing was sent to Robinhood. It is scored from this moment on the practice book.`, id);
-  if (weakRead) await logDesk("assistant", "Jarvis", `Noted. I called this one weak — "${weakRead}". Logging it as an override by ${who.split("@")[0]}. The scoreboard keeps count.`, id);
+  await logDesk("system", "Otto", ap ? apTakeLine(a, ap, ask, under, tk, note) : `✅ Practice trade taken: ${a.title}. Pretend fill ${ask != null ? "$" + ask.toFixed(2) + " (ask)" : "at the card's price"}${under != null ? ` (${tk} ${under})` : ""}, approved by ${who}${fillNow ? " at the tap" : ""}. ${why_ok ? `Why: "${why_ok.setup.slice(0, 120)}" · Kills it: ${why_ok.kills.slice(0, 80)}. ` : "Why: not answered yet. "}${plan.tp_check?.close ? `⚠ The card's target ${a.plan?.tp1} is only $${plan.tp_check.dist} from this fill. ` : ""}${note}Nothing was sent to Robinhood. It is scored from this moment on the practice book.`, id);
+  if (weakRead && !ap) await logDesk("assistant", "Jarvis", `Noted. I called this one weak — "${weakRead}". Logging it as an override by ${who.split("@")[0]}. The scoreboard keeps count.`, id);
   return publicAction(r[0]);
 }
 
@@ -1696,6 +1703,204 @@ export async function whyAttach(id: string, who: string, why: any, tp1: any = nu
   const r = await db("otto_actions?id=eq." + id + "&status=eq.paper_taken", { method: "PATCH", body: JSON.stringify({ plan, ...(a.exit ? { exit } : {}) }) });
   await logDesk("system", "Otto", `📝 Why for ${a.title}: "${why_ok.setup.slice(0, 120)}" · Kills it: ${why_ok.kills.slice(0, 80)}.${tpLine}`, id);
   return publicAction(r?.[0] || { ...a, plan, exit });
+}
+
+/* ===================================================================== v5.9 (11 Nov 2026) — AUTOPILOT for Baby J
+   Josh + Ifoma, 11 Nov: "Josh may not be in the chat as much … put Jarvis on autopilot: they plan in the morning, then he
+   goes autopilot and Baby J makes the decisions." Decided by Ifoma: Josh OR Ifoma can switch it; Baby J may take ideas that
+   were not in the morning plan (marked OFF PLAN); 3 trades, off after 2 losing trades, no new trade from 3:00 PM (all three
+   are numbers in the Autopilot box, not code).
+   What it is: while Autopilot is on, a new PRACTICE card (status paper_wait) is answered by the server with the same
+   practiceOn() Josh's Approve uses — fill at the live ask, scored by the card's own rules. Nothing else changes.
+   What it never does: a LIVE card (status pending) still waits for a human tap; the manual Order ticket is never touched;
+   a card Baby J himself flagged weak (No Edge / Choppy / a chase) is left for Josh. There is no order code in this block. */
+export const AP_DEFAULTS = { max_trades: 3, max_losses: 2, last_entry_min: 900 };
+const AP_KEY = "autopilot";
+const apHuman = (v: any, who: string) => String(v || "").replace(/[^A-Za-z .'-]/g, "").trim().slice(0, 30) || who.split("@")[0];
+export async function apGet(): Promise<any> {
+  const all = (await setting(AP_KEY).catch(() => null)) || {};
+  const mine = all?.rooms?.[owner()] || {};
+  const today = etParts().date;
+  return { ...mine, on: !!mine.on && mine.day === today, cfg: { ...AP_DEFAULTS, ...(mine.cfg || {}) }, today };
+}
+async function apPut(patch: any) {
+  const all = (await setting(AP_KEY).catch(() => null)) || {};
+  const rooms = { ...(all.rooms || {}) };
+  rooms[owner()] = { ...(rooms[owner()] || {}), ...patch };
+  await putSetting(AP_KEY, { rooms }, "autopilot");
+}
+const apTk = (plan: any) => String(plan?.tv_symbol || "").split(":").pop()?.toUpperCase() || "";
+const apState = (a: any): string => a?.outcome && ["win", "loss", "scratch", "unscored"].includes(a.outcome.state) ? a.outcome.state : "open";
+const apEst = (a: any): number | null => a?.outcome && ["win", "loss", "scratch"].includes(a.outcome.state) && a.outcome.pnl_est != null ? Number(a.outcome.pnl_est) : null;
+/* Today's trades Autopilot took (oldest first). */
+export async function apTrades(day = etParts().date): Promise<any[]> {
+  const since = new Date(Date.now() - 20 * 3600e3).toISOString();
+  const rows: any[] = (await db(`otto_actions?${OQ()}select=id,title,status,plan,outcome,created_at,decided_at&status=eq.paper_taken&created_at=gte.${since}&order=created_at.desc&limit=80`).catch(() => [])) || [];
+  const at = (a: any) => Date.parse(a.plan?.paper_fill?.at || a.decided_at || a.created_at) || 0;
+  return rows.filter((a: any) => a?.plan?.autopilot && etParts(new Date(at(a))).date === day).sort((x: any, y: any) => at(x) - at(y));
+}
+/* Why Autopilot must stop now ("" = it may take the next card). Pure. */
+export function apStop(cfg: any, trades: any[], min: number): string {
+  const c = { ...AP_DEFAULTS, ...(cfg || {}) };
+  if (trades.length >= c.max_trades) return `the trade limit (${c.max_trades} trade${c.max_trades === 1 ? "" : "s"} a day)`;
+  const losses = trades.filter((a: any) => apState(a) === "loss").length;
+  if (c.max_losses > 0 && losses >= c.max_losses) return `the loss stop (${losses} losing trade${losses === 1 ? "" : "s"})`;
+  if (min >= c.last_entry_min) return `the last entry time (${fmtMin(c.last_entry_min)} ET)`;
+  return "";
+}
+/* Is this card's name + direction in the morning plan? A plan line with no direction (or "both") matches either way. Pure. */
+export function apOnPlan(plan: any, items: any[]): boolean {
+  const tk = apTk(plan), d = plan?.direction;
+  return !!tk && (items || []).some((x: any) => String(x?.ticker || "").toUpperCase() === tk && (!x.direction || x.direction === "both" || x.direction === d));
+}
+/* Baby J's why for a trade he takes himself: his own card, in the three lines Josh is asked for. No extra AI call. Pure. */
+export function apWhy(a: any): any {
+  const p = a?.plan || {}, tk = apTk(p), sum = String(a?.summary || "").replace(/\s+/g, " ").trim();
+  const setup = `${String(p.setup || "setup")} on ${tk} (${p.direction === "down" ? "puts" : "calls"}). ${sum}`.trim().slice(0, 400);
+  const why_now = (p.level != null ? `Price reached the level the idea is built on (${p.level}). ` : "The setup triggered. ") +
+    `Entry near ${p.entry_underlying ?? "the card's price"}, target ${p.tp1}.`;
+  const kills = `A ${Number(p.wrong_tf) === 15 ? 15 : 5}-minute close ${p.direction === "down" ? "above" : "below"} ${p.stop} (the card's wrong-if).`;
+  return { setup, why_now, kills, by: "Baby J, from his own card" };
+}
+function apTakeLine(a: any, ap: any, ask: number | null, under: number | null, tk: string, note: string): string {
+  return `🛫 Autopilot took a practice trade: ${a.title}. Pretend fill ${ask != null ? "$" + ask.toFixed(2) + " (ask)" : "at the card's price"}${under != null ? ` (${tk} ${under})` : ""}. ` +
+    `Baby J's why: "${String(ap.why?.setup || "").slice(0, 160)}" · Kills it: ${String(ap.why?.kills || "").slice(0, 90)} ` +
+    (ap.on_plan ? "On this morning's plan. " : "⚠ OFF PLAN: this name and direction were not in this morning's plan. ") +
+    `${note}Nothing was sent to Robinhood. Scored from this moment on the practice book, on the Autopilot line.`;
+}
+export function apRecap(trades: any[]): string {
+  if (!trades.length) return "Autopilot took no trades.";
+  const closed = trades.filter((a: any) => apEst(a) != null), tot = Math.round(closed.reduce((s: number, a: any) => s + (apEst(a) || 0), 0));
+  const line = (a: any) => { const st = apState(a), e = apEst(a);
+    return `• ${practiceLabel(a.title)} — ${a.plan?.autopilot?.on_plan ? "on plan" : "OFF PLAN"} — ${st === "open" ? "still open" : st + (e != null ? ` ${e >= 0 ? "+" : "−"}$${Math.abs(Math.round(e))}` : "")} — why: "${String(a.plan?.autopilot?.why?.setup || "").slice(0, 110)}"`; };
+  return `Autopilot took ${trades.length} practice trade${trades.length === 1 ? "" : "s"}${closed.length ? ` (${tot >= 0 ? "+" : "−"}$${Math.abs(tot)} on the ${closed.length} closed)` : ""}:\n${trades.map(line).join("\n")}`;
+}
+export async function apOff(reason: string, by: string) {
+  const st = await apGet();
+  if (!st.on) return st;
+  await apPut({ on: false, off: { at: new Date().toISOString(), by, reason } });
+  const trades = await apTrades(st.today).catch(() => []);
+  await logDesk("system", "Otto", `🛬 Autopilot OFF — ${reason}. ${apRecap(trades)}\nPractice cards wait for Josh's Approve or Reject again. Open Autopilot trades keep running on their own rules (wrong-if, target, 3:50 PM).`);
+  await activity("change", `Autopilot OFF — ${reason}`, by).catch(() => {});
+  if (by === "Otto") await notify("card", "🛬 Autopilot switched itself off", reason.slice(0, 120)).catch(() => {});
+  return await apGet();
+}
+/* The limits are checked when a card arrives AND on every score tick / Desk look, so the off line is not late. */
+export async function apTick() {
+  const st = await apGet();
+  if (!st.on) return;
+  const stop = apStop(st.cfg, await apTrades(st.today), etParts().min);
+  if (stop) await apOff("it reached " + stop, "Otto");
+}
+/* A new practice card while Autopilot is on. Returns the taken card, or null when it is left for Josh. */
+export async function autopilotTake(a: any): Promise<any | null> {
+  if (!a || a.status !== "paper_wait") return null;
+  const st = await apGet();
+  if (!st.on || marketClock().status !== "open") return null;
+  const trades = await apTrades(st.today);
+  const stop = apStop(st.cfg, trades, etParts().min);
+  if (stop) { await apOff("it reached " + stop, "Otto"); return null; }
+  const weak = overrideRead(a);
+  if (weak) { await logDesk("system", "Otto", `🛫 Autopilot left this one for Josh — Baby J flagged it himself: "${weak}". ${a.title}`, a.id); return null; }
+  const taken = await practiceOn(a, "approve", "autopilot", null, { fill_now: true,
+    autopilot: { on_plan: apOnPlan(a.plan, st.plan?.items || []), why: apWhy(a), switched_by: st.by || null, n: trades.length + 1 } });
+  if (taken?.status !== "paper_taken" || !taken?.plan?.autopilot) return null;
+  await notify("card", `🛫 Autopilot took: ${String(a.title).slice(0, 70)}`, `Practice trade ${trades.length + 1} of ${st.cfg.max_trades}${taken.plan.autopilot.on_plan ? "" : " · OFF PLAN"}. Nothing was sent to Robinhood.`).catch(() => {});
+  if (trades.length + 1 >= st.cfg.max_trades) await apOff(`it reached the trade limit (${st.cfg.max_trades} trade${st.cfg.max_trades === 1 ? "" : "s"} a day)`, "Otto");
+  return taken;
+}
+const AP_PLAN_TOOL = { name: "autopilot_plan", description: "Write today's plan from this morning's conversation.",
+  input_schema: { type: "object", properties: {
+    summary: { type: "string", description: "Two or three plain sentences: what the trader and you agreed to look for today." },
+    items: { type: "array", maxItems: 12, items: { type: "object", properties: {
+      ticker: { type: "string" }, direction: { type: "string", enum: ["up", "down", "both"], description: "up = calls, down = puts, both = either way at the level" },
+      level: { type: "number", description: "the price level, when one was named" }, note: { type: "string", description: "a few words" } }, required: ["ticker", "direction"] } } },
+    required: ["summary", "items"] } };
+/* The morning plan, captured when Autopilot is switched on: today's Watcher levels + Josh's homework levels + (one AI read of)
+   this morning's Desk conversation. If the AI read fails, the levels alone are the plan and the Desk line says so. */
+export async function apBuildPlan(): Promise<any> {
+  const e = etParts(), items: any[] = [], seen = new Set<string>();
+  const add = (ticker: any, direction: any, level: any, note: string, src: string) => {
+    const tk = String(ticker || "").toUpperCase().replace(/[^A-Z.]/g, "").slice(0, 6);
+    const d = direction === "up" || direction === "down" ? direction : "both";
+    if (!tk || seen.has(tk + "|" + d) || items.length >= 20) return;
+    seen.add(tk + "|" + d);
+    const lv = Number(level);
+    items.push({ ticker: tk, direction: d, ...(isFinite(lv) && lv > 0 ? { level: lv } : {}), ...(note ? { note: String(note).slice(0, 80) } : {}), src });
+  };
+  const marks = await watchRows(e.date).catch(() => []);
+  const hk = await hkStatus().catch(() => null);
+  const since = new Date(Date.now() - (e.min + 5) * 60e3).toISOString();            // since midnight ET
+  const chat: any[] = (await db("otto_desk?" + OQ() + "select=created_at,role,author,content&created_at=gte." + since + "&role=in.(user,assistant)&order=id.asc&limit=200").catch(() => [])) || [];
+  let summary = "", source = "levels", err = "";
+  if (chat.some((m: any) => m.role === "user")) {
+    try {
+      const out = await claudeTool({ model: MODEL, max_tokens: 900,
+        system: [{ type: "text", text: `You are Jarvis inside Otto Trader. The trader is about to switch Autopilot on: for the rest of today you take practice trades yourself. Write down today's plan from this morning's conversation with the trader. Only what was actually said or is in the lists below: never add a name, a direction or a level that is not there. If nothing was planned, return no items and say so.${NAME_RULE}` }],
+        tools: [AP_PLAN_TOOL], messages: [{ role: "user", content:
+          `WATCHER LEVELS TODAY: ${(marks || []).map((r: any) => `${r.ticker} ${Number(r.level)} ${r.dir}`).join(", ") || "none"}\n` +
+          `HOMEWORK LEVELS: ${((hk?.levels || []) as any[]).map((x: any) => `${x.ticker} ${x.level} ${x.dir}`).join(", ") || "none"}\n` +
+          `THIS MORNING'S CONVERSATION:\n${chat.slice(-50).map((m: any) => `${m.role === "user" ? (m.author || "Trader") : "Jarvis"}: ${String(m.content || "").slice(0, 600)}`).join("\n")}` }] },
+        "autopilot_plan", 40_000);
+      summary = unname(String(out?.summary || "")).slice(0, 600);
+      for (const x of (Array.isArray(out?.items) ? out.items : []).slice(0, 12)) add(x?.ticker, x?.direction, x?.level, unname(String(x?.note || "")), "chat");
+      source = "this morning's conversation + levels";
+    } catch (er) { err = String((er as Error)?.message || er).slice(0, 120); }
+  }
+  for (const r of (marks || [])) add(r.ticker, r.dir, r.level, String(r.note || ""), "watcher");
+  for (const x of ((hk?.levels || []) as any[])) add(x.ticker, x.dir, x.level, "Josh's homework", "homework");
+  return { items, summary, source, ...(err ? { error: err } : {}), at: new Date().toISOString() };
+}
+const apPlanLine = (plan: any) => !(plan?.items || []).length ? "No plan was made this morning, so every Autopilot trade today will be marked OFF PLAN."
+  : `Plan (${plan.source}): ${plan.items.map((x: any) => `${x.ticker} ${x.direction === "up" ? "▲" : x.direction === "down" ? "▼" : "▲▼"}${x.level ? " " + x.level : ""}`).join(", ")}.${plan.summary ? " " + plan.summary : ""}${plan.error ? " (Baby J could not read the conversation just now, so the plan is the levels only.)" : ""}`;
+export async function apView() {
+  const st = await apGet(), trades = await apTrades(st.today).catch(() => []), same = st.day === st.today;
+  return { ok: true, on: st.on, day: st.today, by: st.on ? st.by || null : null, at: st.on ? st.at || null : null,
+    plan: same ? st.plan || null : null, off: same && !st.on ? st.off || null : null, cfg: st.cfg, clock: marketClock().status,
+    left: Math.max(0, st.cfg.max_trades - trades.length),
+    trades: trades.map((a: any) => ({ id: a.id, title: practiceLabel(a.title), on_plan: !!a.plan.autopilot.on_plan, state: apState(a), est: apEst(a),
+      at: a.plan.paper_fill?.at || null, fill: a.plan.paper_fill?.ask ?? null, why: String(a.plan.autopilot.why?.setup || "").slice(0, 240) })) };
+}
+/* fn=autopilot — GET: the state. POST {on:true|false, author} switches it (Josh or Ifoma); POST {cfg:{max_trades,max_losses,last_entry:"15:00"}} sets the numbers. */
+export async function autopilotRoute(body: any, who: string) {
+  const by = apHuman(body?.author, who);
+  if (body?.cfg && typeof body.cfg === "object") {
+    const c = body.cfg, cur = (await apGet()).cfg;
+    const num = (v: any, lo: number, hi: number, lab: string) => { const n = Math.round(Number(v)); if (!isFinite(n) || n < lo || n > hi) throw new Error(`${lab} must be between ${lo} and ${hi}`); return n; };
+    const hm2 = /^(\d{1,2}):(\d{2})$/.exec(String(c.last_entry ?? ""));
+    const le = hm2 ? Number(hm2[1]) * 60 + Number(hm2[2]) : c.last_entry_min != null ? Number(c.last_entry_min) : cur.last_entry_min;
+    if (!isFinite(le) || le < 585 || le > 950) throw new Error("Last entry must be between 9:45 AM and 3:50 PM ET");
+    const cfg = { max_trades: num(c.max_trades ?? cur.max_trades, 1, 10, "Trades a day"), max_losses: num(c.max_losses ?? cur.max_losses, 0, 10, "Losing trades (0 = off)"), last_entry_min: Math.round(le) };
+    await apPut({ cfg });
+    if (JSON.stringify(cfg) !== JSON.stringify(cur)) {
+      const txt = `Autopilot limits set by ${by}: ${cfg.max_trades} trade${cfg.max_trades === 1 ? "" : "s"} a day, off after ${cfg.max_losses || "no"} losing trade${cfg.max_losses === 1 ? "" : "s"}, no new trade from ${fmtMin(cfg.last_entry_min)} ET`;
+      await activity("change", txt, by).catch(() => {});
+      await logDesk("system", "Otto", txt + ".");
+    }
+  }
+  if (body?.on === true) {
+    const e = etParts(), st0 = await apGet();
+    if (!isTradingDay(e.date)) throw new Error("The market is closed today. Autopilot can be switched on on a trading day.");
+    if (!st0.on) {
+      const stop = apStop(st0.cfg, await apTrades(e.date), e.min);
+      if (stop) throw new Error(`Autopilot can't start: today already reached ${stop}. Change the number in the Autopilot box if you want more.`);
+      const plan = await apBuildPlan();
+      await apPut({ on: true, day: e.date, by, at: new Date().toISOString(), plan, off: null });
+      await logDesk("system", "Otto", `🛫 Autopilot ON — switched on by ${by}. Baby J now answers his own PRACTICE cards until ${st0.cfg.max_trades} trade${st0.cfg.max_trades === 1 ? "" : "s"}, ${st0.cfg.max_losses ? st0.cfg.max_losses + " losing trade" + (st0.cfg.max_losses === 1 ? "" : "s") + ", " : ""}or ${fmtMin(st0.cfg.last_entry_min)} ET, whichever comes first. ${apPlanLine(plan)} Practice only: a LIVE (real money) card still waits for a human tap. A card Baby J flags weak is left for Josh.`);
+      await activity("change", `Autopilot ON (by ${by})`, by).catch(() => {});
+      if (marketClock().status === "open") {                                             // cards already waiting when it is switched on
+        const wait: any[] = (await db("otto_actions?" + OQ() + "select=*&status=eq.paper_wait&order=created_at.asc&limit=6").catch(() => [])) || [];
+        for (const a of wait) {
+          if (a.created_by === "otto" || Date.now() - Date.parse(a.created_at) > ACTION_TTL_MS) continue;   // the Order ticket is the trader's own; expired cards stay expired
+          try { await autopilotTake(a); } catch (er) { console.error("autopilot sweep", er); }
+        }
+      }
+    }
+  } else if (body?.on === false) {
+    await apOff(`switched off by ${by}`, by);
+  }
+  await apTick().catch(() => {});
+  return await apView();
 }
 
 async function actOn(id: string, decision: string, who: string, why: any = null, opts: any = {}) {
@@ -3573,6 +3778,7 @@ export async function scoreTick(budget = 6) {
       if (a.status === "paper_taken" && Array.isArray(r) && r.length && (o.state === "win" || o.state === "loss")) await logDesk("system", "Otto", practiceStopLine(a, o), a.id).catch(() => {});
     }
   }
+  await apTick().catch(() => {});   // v5.9: Autopilot's loss stop / last entry time, checked with every score pass
   return { ok: true, graded: n };
 }
 // v5.0 ROOMS: after the house pass, the same tick runs in each member's room (their practice trades are closed / scored by
@@ -3623,6 +3829,7 @@ export function scoreRows(ideas: any[], pnlBy: Record<string, number>) {
     // v3.41: the practice book, overrides and Josh's whys ride along for the Scoreboard and the report card
     practice: isPracticeCard(a), override: !!a.plan?.override || noWhy(a), override_read: a.plan?.override_read ?? (noWhy(a) ? NO_WHY_TEXT : null),   // v5.7: no why = an override
     why_pending: !!a.plan?.why_pending && !a.plan?.josh_why, tp1_card: a.plan?.tp1_card ?? null,
+    autopilot: a.plan?.autopilot ? (a.plan.autopilot.on_plan ? "plan" : "off") : null, ap_why: a.plan?.autopilot?.why?.setup ?? null,   // v5.9
     why: a.plan?.josh_why ? { setup: a.plan.josh_why.setup, why_now: a.plan.josh_why.why_now, kills: a.plan.josh_why.kills } : null,
     why_not: a.plan?.josh_reject_why?.why_not ?? null, exit_why: a.plan?.josh_exit_why?.text ?? null,
     // v3.43: a practice trade Josh closed by hand, and what the rule would have done
@@ -5714,7 +5921,13 @@ export function practiceStats(acts: any[], book: { start: number; since: string 
   const ov = cards.filter((a: any) => (a.plan?.override || noWhy(a)) && a.status === "paper_taken");   // v5.7: a why left unanswered counts
   const ovScored = ov.filter((a: any) => a.outcome && ["win", "loss"].includes(a.outcome.state));
   const whys = answered.filter((a: any) => a.plan?.josh_why || a.plan?.josh_reject_why);
+  // v5.9: trades Autopilot took are on their own line, split on plan / off plan; "josh" is everything Josh approved himself
+  const apc = taken.filter((a: any) => a.plan?.autopilot);
+  const grp = (xs: any[]) => ({ n: xs.length, wins: xs.filter((a: any) => a.outcome?.state === "win").length, losses: xs.filter((a: any) => a.outcome?.state === "loss").length,
+    est: Math.round(xs.reduce((s: number, a: any) => s + est(a), 0)) });
   return {
+    autopilot: { ...grp(apc), on_plan: grp(apc.filter((a: any) => a.plan.autopilot.on_plan)), off_plan: grp(apc.filter((a: any) => !a.plan.autopilot.on_plan)) },
+    josh: grp(taken.filter((a: any) => !a.plan?.autopilot)),
     start: book.start, since: book.since, balance: Math.round((book.start + taken.reduce((s: number, a: any) => s + est(a), 0)) * 100) / 100,
     offered: cards.length, answered: answered.length, taken: taken.length, rejected: answered.length - taken.length, expired: expired.length,
     whys: whys.length, scoring: taken.filter((a: any) => !a.outcome || !["win", "loss", "scratch", "unscored"].includes(a.outcome.state)).length,
@@ -7162,6 +7375,7 @@ export async function runningNow(): Promise<string> {
     setting("signal_beat").catch(() => null),
     setting("ears_state").catch(() => null),
   ]);
+  const apS = await apGet().catch(() => null);   // v5.9
   const beatOk = beat?.at && Date.now() - Date.parse(beat.at) < 3 * 60e3 && beat.state === "ok";
   return `RUNNING RIGHT NOW — the ONLY things that act without a message (anything else you'd have to do with a tool, now):
 - 👁 Watcher levels today: ${(w || []).length ? w.map((r: any) => `${r.ticker} ${Number(r.level)} ${r.dir}`).join(", ") : "none"} (checked every minute on 5/10-min closes, 9:30–4:00).
@@ -7169,6 +7383,7 @@ export async function runningNow(): Promise<string> {
 - 🛡 Protected trades: ${(prot || []).length ? prot.map((r: any) => `${r.title} (Robinhood stop at $${r.exit?.stop_option}, TradingView alerts wrong-if ${r.exit?.wrong_if} / TP1 ${r.exit?.tp1})`).join("; ") : "none"}.
 - Auto-close: ${L.auto_close ? `ON — position check every ${Math.max(5, Number(L.review_min) || 15)} min while a trade is open (HOLD or CLOSE only)` : "OFF"}.
 - TradingView alert fires read every 2 min. Otto Signals watcher: ${beatOk ? "on" : "NOT reporting — signals may be missed"}.
+- 🛫 Autopilot: ${apS?.on ? `ON (switched on by ${apS.by || "the trader"}) — the SERVER answers your new PRACTICE cards for you the moment you build them; say so plainly if asked. Stops at ${apS.cfg.max_trades} trades, ${apS.cfg.max_losses} losing trades or ${fmtMin(apS.cfg.last_entry_min)} ET. A LIVE card still needs a human tap; a card you flag weak is left for Josh` : "OFF — every practice card waits for Josh's Approve or Reject"}.
 To make a new promise true: schedule_check (a timed look + ping) or add_watch_level (a price level). Otherwise say plainly you can't.${earsHeardBlock(earsSt, day)}`;
 }
 
@@ -7429,7 +7644,8 @@ export async function recapExtras(day: string) {
   const bs = await db(`otto_signal_batches?select=id,status,cards,timing,error&day=eq.${day}&order=id.asc&limit=40`).catch(() => []);
   const sig = (bs || []).filter((b: any) => b.timing).map((b: any) => `- batch ${b.id}: ${(b.cards || []).length} card(s), post → card ${b.timing.total_ms != null ? Math.round(b.timing.total_ms / 1000) + "s" : "?"}${b.error ? " — " + b.error : ""}`);
   const st = await setting("selftest_last").catch(() => null);
-  return `JARVIS PROMISES (today): ${pr?.day === day ? `${pr.made} made, ${pr.backed} backed, ${pr.corrected} corrected by the server check` : "none checked"}\n` +
+  const apT = await apTrades(day).catch(() => []);   // v5.9
+  return (apT.length ? `AUTOPILOT (today): ${apRecap(apT)}\nGive Autopilot its own line in the recap, separate from the trades Josh approved himself.\n` : "") + `JARVIS PROMISES (today): ${pr?.day === day ? `${pr.made} made, ${pr.backed} backed, ${pr.corrected} corrected by the server check` : "none checked"}\n` +
     `SIGNAL SELF-TEST: ${st?.at && etParts(new Date(st.at)).date === day ? (st.ok ? `passed (${st.secs}s)` : "FAILED") : "did not run"}\n` +
     `SIGNAL CARD TIMES (today):\n${sig.join("\n") || "(no signal cards built)"}\nPut one line in the recap: promises made/backed/corrected and the signal timings.`;
 }
@@ -8393,7 +8609,7 @@ Deno.serve(async (req) => {
       return json({ ok: true, email: claims.email || null, anonymous: !!claims.is_anonymous, desk: !!u,
         ...(u ? await ROOM.run({ owner: u.email }, () => meInfo(u)) : {}) });
     }
-    if (["desk", "act", "panel", "desk_log", "oauth_start", "oauth_finish", "conn_status", "disconnect",
+    if (["desk", "act", "autopilot", "panel", "desk_log", "oauth_start", "oauth_finish", "conn_status", "disconnect",
          "sentiment", "market_desk", "journal", "why_out", "report_card", "trade_reason", "review_get", "review_build", "score", "morning_now", "ticket", "limits_get", "limits_set", "house_rules_get", "house_rules_set", "watch_get", "watch_set", "watch_scan", "arm_callouts", "ears_arm", "ears_dismiss", "ears_remove", "ears_fix", "ears_mode", "ears_state", "performance", "help", "jason_today", "jason_sweep", "jason_score",
          "push_key", "push_sub", "push_list", "push_remove", "push_test", "layout_get", "layout_set",
          "signals_feed", "signal_img", "signals_cfg", "signals_cfg_set", "signal_chat", "signal_chat_clear", "selftest_now",
@@ -8434,6 +8650,7 @@ Deno.serve(async (req) => {
       }
       if (fn === "act" && body.why_only) return json({ ok: true, action: await whyAttach(String(body.id || ""), who, body.why, body.tp1 ?? null) });   // v5.7
       if (fn === "act") return json({ ok: true, action: await actOn(String(body.id || ""), String(body.decision || ""), who, body.decision === "approve" ? body.why : (body.why_not ?? body.why), { fill_now: !!body.fill_now }) });
+      if (fn === "autopilot") return json(await autopilotRoute(req.method === "POST" ? body : null, who));   // v5.9
       if (fn === "why_out") return json(await whyOut(body, who));                                   // v3.41: the line after Close Now
       if (fn === "panel") return json(await panel());
       if (fn === "trade_live") return json(await tradeLiveAll());                                                             // v3.43: + open practice trades
