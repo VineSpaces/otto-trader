@@ -1,5 +1,5 @@
-// v5.9 (11 Nov 2026) — AUTOPILOT, the REAL fn=autopilot route (the one the app calls). The trading logic is tested in v313_test.ts
-// (the "v5.9 Autopilot" tests, through the real proposeAction); here: the route is reachable for a Desk login only, switches on / off,
+// v5.9 (11 Nov 2026) — OTTOPILOT, the REAL fn=autopilot route (the one the app calls). The trading logic is tested in v313_test.ts
+// (the "v5.9 OttoPilot" tests, through the real proposeAction); here: the route is reachable for a Desk login only, switches on / off,
 // saves the numbers, and answers a bad number with an error the app can show. Nothing touches the network.
 // Run: deno test -A --no-check supabase/tests/v590_test.ts
 const RealDate = Date; let NOW = RealDate.parse("2026-11-10T15:30:00Z");   // Tue 10 Nov 2026, 10:30 AM ET
@@ -43,10 +43,10 @@ Deno.test("v5.9 route fn=autopilot: off by default; a stranger is locked out; on
   assert(rp.status === 403 && !SET.autopilot, "a stranger cannot switch it on");
   const j1 = await (await post({ on: true, author: "Josh" })).json();
   assert(j1.ok && j1.on === true && j1.by === "Josh" && j1.day === "2026-11-10" && j1.left === 3, "on: " + JSON.stringify(j1));
-  assert(desk.some((d) => /🛫 Autopilot ON — switched on by Josh/.test(d)), "desk: " + desk.join(" | "));
+  assert(desk.some((d) => /🛫 OttoPilot ON — switched on by Josh/.test(d)), "desk: " + desk.join(" | "));
   const j2 = await (await post({ on: false, author: "Ifoma" })).json();
   assert(j2.ok && j2.on === false && j2.off.by === "Ifoma" && /switched off by Ifoma/.test(j2.off.reason), "off: " + JSON.stringify(j2));
-  assert(desk.some((d) => /🛬 Autopilot OFF — switched off by Ifoma\. Autopilot took no trades\./.test(d)), "off line: " + desk.join(" | "));
+  assert(desk.some((d) => /🛬 OttoPilot OFF — switched off by Ifoma\. OttoPilot took no trades\./.test(d)), "off line: " + desk.join(" | "));
   assert(!rhCalls.some((t) => /place_|cancel_|exercise/.test(t)), "no order tool: " + rhCalls.join(","));
 });
 Deno.test("v5.9 route fn=autopilot: the numbers save; a bad number comes back as an error and changes nothing; not a trading day → refused", async () => {

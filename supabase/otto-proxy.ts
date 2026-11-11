@@ -1575,7 +1575,7 @@ export async function proposeAction(input: any, who: string, opts: { manual?: bo
     }
   }
   if (rows?.[0]?.status === "pending" && who !== "signals" && who !== "alert" && who !== "watcher") await markPinged([rows[0].id]), await notify("card", `🃏 Card waiting: ${String(rows[0].title).slice(0, 80)}`, "Tap to open the Desk and Approve or Reject (cards expire in 20 minutes).");
-  // v5.9: Autopilot — Baby J answers his own practice card (never a LIVE card, never the manual Order ticket)
+  // v5.9: OttoPilot — Baby J answers his own practice card (never a LIVE card, never the manual Order ticket)
   if (rows?.[0]?.status === "paper_wait" && !opts.manual) {
     let apTaken: any = null;
     try { apTaken = await autopilotTake(rows[0]); } catch (e) { console.error("autopilot", e); }
@@ -1657,7 +1657,7 @@ export async function practiceOn(a: any, decision: string, who: string, why: any
   const fill = { ask, delta, underlying: under, at: now, by: who, note: note.trim() || null };
   // v3.41: the v3.39 override tag applies to practice approvals too (the practice book's "Overrode Baby J" line reads it)
   const weakRead = overrideRead(a);                                          // v4.2.3: only a real No Edge / Choppy / chase flag counts as an override
-  const ap = opts?.autopilot || null;                                       // v5.9: Baby J took it himself (Autopilot) — his why, never Josh's
+  const ap = opts?.autopilot || null;                                       // v5.9: Baby J took it himself (OttoPilot) — his why, never Josh's
   const plan = { ...(a.plan || {}), paper_fill: fill, ...(ap ? { autopilot: { ...ap, at: now }, why_pending: false } : why_ok ? { josh_why: why_ok, why_pending: false } : { why_pending: true }),
     tp_check: tpCheck(a.plan, under), ...(weakRead && !ap ? { override: true, override_read: weakRead } : {}) };
   const r = await left({ status: "paper_taken", decided_by: who, decided_at: now, plan, outcome: null });
@@ -1705,12 +1705,12 @@ export async function whyAttach(id: string, who: string, why: any, tp1: any = nu
   return publicAction(r?.[0] || { ...a, plan, exit });
 }
 
-/* ===================================================================== v5.9 (11 Nov 2026) — AUTOPILOT for Baby J
+/* ===================================================================== v5.9 (11 Nov 2026) — OTTOPILOT for Baby J
    Josh + Ifoma, 11 Nov: "Josh may not be in the chat as much … put Jarvis on autopilot: they plan in the morning, then he
    goes autopilot and Baby J makes the decisions." Decided by Ifoma: Josh OR Ifoma can switch it; Baby J may take ideas that
    were not in the morning plan (marked OFF PLAN); 3 trades, off after 2 losing trades, no new trade from 3:00 PM (all three
-   are numbers in the Autopilot box, not code).
-   What it is: while Autopilot is on, a new PRACTICE card (status paper_wait) is answered by the server with the same
+   are numbers in the OttoPilot box, not code).
+   What it is: while OttoPilot is on, a new PRACTICE card (status paper_wait) is answered by the server with the same
    practiceOn() Josh's Approve uses — fill at the live ask, scored by the card's own rules. Nothing else changes.
    What it never does: a LIVE card (status pending) still waits for a human tap; the manual Order ticket is never touched;
    a card Baby J himself flagged weak (No Edge / Choppy / a chase) is left for Josh. There is no order code in this block. */
@@ -1732,14 +1732,14 @@ async function apPut(patch: any) {
 const apTk = (plan: any) => String(plan?.tv_symbol || "").split(":").pop()?.toUpperCase() || "";
 const apState = (a: any): string => a?.outcome && ["win", "loss", "scratch", "unscored"].includes(a.outcome.state) ? a.outcome.state : "open";
 const apEst = (a: any): number | null => a?.outcome && ["win", "loss", "scratch"].includes(a.outcome.state) && a.outcome.pnl_est != null ? Number(a.outcome.pnl_est) : null;
-/* Today's trades Autopilot took (oldest first). */
+/* Today's trades OttoPilot took (oldest first). */
 export async function apTrades(day = etParts().date): Promise<any[]> {
   const since = new Date(Date.now() - 20 * 3600e3).toISOString();
   const rows: any[] = (await db(`otto_actions?${OQ()}select=id,title,status,plan,outcome,created_at,decided_at&status=eq.paper_taken&created_at=gte.${since}&order=created_at.desc&limit=80`).catch(() => [])) || [];
   const at = (a: any) => Date.parse(a.plan?.paper_fill?.at || a.decided_at || a.created_at) || 0;
   return rows.filter((a: any) => a?.plan?.autopilot && etParts(new Date(at(a))).date === day).sort((x: any, y: any) => at(x) - at(y));
 }
-/* Why Autopilot must stop now ("" = it may take the next card). Pure. */
+/* Why OttoPilot must stop now ("" = it may take the next card). Pure. */
 export function apStop(cfg: any, trades: any[], min: number): string {
   const c = { ...AP_DEFAULTS, ...(cfg || {}) };
   if (trades.length >= c.max_trades) return `the trade limit (${c.max_trades} trade${c.max_trades === 1 ? "" : "s"} a day)`;
@@ -1763,26 +1763,26 @@ export function apWhy(a: any): any {
   return { setup, why_now, kills, by: "Baby J, from his own card" };
 }
 function apTakeLine(a: any, ap: any, ask: number | null, under: number | null, tk: string, note: string): string {
-  return `🛫 Autopilot took a practice trade: ${a.title}. Pretend fill ${ask != null ? "$" + ask.toFixed(2) + " (ask)" : "at the card's price"}${under != null ? ` (${tk} ${under})` : ""}. ` +
+  return `🛫 OttoPilot took a practice trade: ${a.title}. Pretend fill ${ask != null ? "$" + ask.toFixed(2) + " (ask)" : "at the card's price"}${under != null ? ` (${tk} ${under})` : ""}. ` +
     `Baby J's why: "${String(ap.why?.setup || "").slice(0, 160)}" · Kills it: ${String(ap.why?.kills || "").slice(0, 90)} ` +
     (ap.on_plan ? "On this morning's plan. " : "⚠ OFF PLAN: this name and direction were not in this morning's plan. ") +
-    `${note}Nothing was sent to Robinhood. Scored from this moment on the practice book, on the Autopilot line.`;
+    `${note}Nothing was sent to Robinhood. Scored from this moment on the practice book, on the OttoPilot line.`;
 }
 export function apRecap(trades: any[]): string {
-  if (!trades.length) return "Autopilot took no trades.";
+  if (!trades.length) return "OttoPilot took no trades.";
   const closed = trades.filter((a: any) => apEst(a) != null), tot = Math.round(closed.reduce((s: number, a: any) => s + (apEst(a) || 0), 0));
   const line = (a: any) => { const st = apState(a), e = apEst(a);
     return `• ${practiceLabel(a.title)} — ${a.plan?.autopilot?.on_plan ? "on plan" : "OFF PLAN"} — ${st === "open" ? "still open" : st + (e != null ? ` ${e >= 0 ? "+" : "−"}$${Math.abs(Math.round(e))}` : "")} — why: "${String(a.plan?.autopilot?.why?.setup || "").slice(0, 110)}"`; };
-  return `Autopilot took ${trades.length} practice trade${trades.length === 1 ? "" : "s"}${closed.length ? ` (${tot >= 0 ? "+" : "−"}$${Math.abs(tot)} on the ${closed.length} closed)` : ""}:\n${trades.map(line).join("\n")}`;
+  return `OttoPilot took ${trades.length} practice trade${trades.length === 1 ? "" : "s"}${closed.length ? ` (${tot >= 0 ? "+" : "−"}$${Math.abs(tot)} on the ${closed.length} closed)` : ""}:\n${trades.map(line).join("\n")}`;
 }
 export async function apOff(reason: string, by: string) {
   const st = await apGet();
   if (!st.on) return st;
   await apPut({ on: false, off: { at: new Date().toISOString(), by, reason } });
   const trades = await apTrades(st.today).catch(() => []);
-  await logDesk("system", "Otto", `🛬 Autopilot OFF — ${reason}. ${apRecap(trades)}\nPractice cards wait for Josh's Approve or Reject again. Open Autopilot trades keep running on their own rules (wrong-if, target, 3:50 PM).`);
-  await activity("change", `Autopilot OFF — ${reason}`, by).catch(() => {});
-  if (by === "Otto") await notify("card", "🛬 Autopilot switched itself off", reason.slice(0, 120)).catch(() => {});
+  await logDesk("system", "Otto", `🛬 OttoPilot OFF — ${reason}. ${apRecap(trades)}\nPractice cards wait for Josh's Approve or Reject again. Open OttoPilot trades keep running on their own rules (wrong-if, target, 3:50 PM).`);
+  await activity("change", `OttoPilot OFF — ${reason}`, by).catch(() => {});
+  if (by === "Otto") await notify("card", "🛬 OttoPilot switched itself off", reason.slice(0, 120)).catch(() => {});
   return await apGet();
 }
 /* The limits are checked when a card arrives AND on every score tick / Desk look, so the off line is not late. */
@@ -1792,7 +1792,7 @@ export async function apTick() {
   const stop = apStop(st.cfg, await apTrades(st.today), etParts().min);
   if (stop) await apOff("it reached " + stop, "Otto");
 }
-/* A new practice card while Autopilot is on. Returns the taken card, or null when it is left for Josh. */
+/* A new practice card while OttoPilot is on. Returns the taken card, or null when it is left for Josh. */
 export async function autopilotTake(a: any): Promise<any | null> {
   if (!a || a.status !== "paper_wait") return null;
   const st = await apGet();
@@ -1801,11 +1801,11 @@ export async function autopilotTake(a: any): Promise<any | null> {
   const stop = apStop(st.cfg, trades, etParts().min);
   if (stop) { await apOff("it reached " + stop, "Otto"); return null; }
   const weak = overrideRead(a);
-  if (weak) { await logDesk("system", "Otto", `🛫 Autopilot left this one for Josh — Baby J flagged it himself: "${weak}". ${a.title}`, a.id); return null; }
+  if (weak) { await logDesk("system", "Otto", `🛫 OttoPilot left this one for Josh — Baby J flagged it himself: "${weak}". ${a.title}`, a.id); return null; }
   const taken = await practiceOn(a, "approve", "autopilot", null, { fill_now: true,
     autopilot: { on_plan: apOnPlan(a.plan, st.plan?.items || []), why: apWhy(a), switched_by: st.by || null, n: trades.length + 1 } });
   if (taken?.status !== "paper_taken" || !taken?.plan?.autopilot) return null;
-  await notify("card", `🛫 Autopilot took: ${String(a.title).slice(0, 70)}`, `Practice trade ${trades.length + 1} of ${st.cfg.max_trades}${taken.plan.autopilot.on_plan ? "" : " · OFF PLAN"}. Nothing was sent to Robinhood.`).catch(() => {});
+  await notify("card", `🛫 OttoPilot took: ${String(a.title).slice(0, 70)}`, `Practice trade ${trades.length + 1} of ${st.cfg.max_trades}${taken.plan.autopilot.on_plan ? "" : " · OFF PLAN"}. Nothing was sent to Robinhood.`).catch(() => {});
   if (trades.length + 1 >= st.cfg.max_trades) await apOff(`it reached the trade limit (${st.cfg.max_trades} trade${st.cfg.max_trades === 1 ? "" : "s"} a day)`, "Otto");
   return taken;
 }
@@ -1816,7 +1816,7 @@ const AP_PLAN_TOOL = { name: "autopilot_plan", description: "Write today's plan 
       ticker: { type: "string" }, direction: { type: "string", enum: ["up", "down", "both"], description: "up = calls, down = puts, both = either way at the level" },
       level: { type: "number", description: "the price level, when one was named" }, note: { type: "string", description: "a few words" } }, required: ["ticker", "direction"] } } },
     required: ["summary", "items"] } };
-/* The morning plan, captured when Autopilot is switched on: today's Watcher levels + Josh's homework levels + (one AI read of)
+/* The morning plan, captured when OttoPilot is switched on: today's Watcher levels + Josh's homework levels + (one AI read of)
    this morning's Desk conversation. If the AI read fails, the levels alone are the plan and the Desk line says so. */
 export async function apBuildPlan(): Promise<any> {
   const e = etParts(), items: any[] = [], seen = new Set<string>();
@@ -1836,7 +1836,7 @@ export async function apBuildPlan(): Promise<any> {
   if (chat.some((m: any) => m.role === "user")) {
     try {
       const out = await claudeTool({ model: MODEL, max_tokens: 900,
-        system: [{ type: "text", text: `You are Jarvis inside Otto Trader. The trader is about to switch Autopilot on: for the rest of today you take practice trades yourself. Write down today's plan from this morning's conversation with the trader. Only what was actually said or is in the lists below: never add a name, a direction or a level that is not there. If nothing was planned, return no items and say so.${NAME_RULE}` }],
+        system: [{ type: "text", text: `You are Jarvis inside Otto Trader. The trader is about to switch OttoPilot on: for the rest of today you take practice trades yourself. Write down today's plan from this morning's conversation with the trader. Only what was actually said or is in the lists below: never add a name, a direction or a level that is not there. If nothing was planned, return no items and say so.${NAME_RULE}` }],
         tools: [AP_PLAN_TOOL], messages: [{ role: "user", content:
           `WATCHER LEVELS TODAY: ${(marks || []).map((r: any) => `${r.ticker} ${Number(r.level)} ${r.dir}`).join(", ") || "none"}\n` +
           `HOMEWORK LEVELS: ${((hk?.levels || []) as any[]).map((x: any) => `${x.ticker} ${x.level} ${x.dir}`).join(", ") || "none"}\n` +
@@ -1851,7 +1851,7 @@ export async function apBuildPlan(): Promise<any> {
   for (const x of ((hk?.levels || []) as any[])) add(x.ticker, x.dir, x.level, "Josh's homework", "homework");
   return { items, summary, source, ...(err ? { error: err } : {}), at: new Date().toISOString() };
 }
-const apPlanLine = (plan: any) => !(plan?.items || []).length ? "No plan was made this morning, so every Autopilot trade today will be marked OFF PLAN."
+const apPlanLine = (plan: any) => !(plan?.items || []).length ? "No plan was made this morning, so every OttoPilot trade today will be marked OFF PLAN."
   : `Plan (${plan.source}): ${plan.items.map((x: any) => `${x.ticker} ${x.direction === "up" ? "▲" : x.direction === "down" ? "▼" : "▲▼"}${x.level ? " " + x.level : ""}`).join(", ")}.${plan.summary ? " " + plan.summary : ""}${plan.error ? " (Baby J could not read the conversation just now, so the plan is the levels only.)" : ""}`;
 export async function apView() {
   const st = await apGet(), trades = await apTrades(st.today).catch(() => []), same = st.day === st.today;
@@ -1873,21 +1873,21 @@ export async function autopilotRoute(body: any, who: string) {
     const cfg = { max_trades: num(c.max_trades ?? cur.max_trades, 1, 10, "Trades a day"), max_losses: num(c.max_losses ?? cur.max_losses, 0, 10, "Losing trades (0 = off)"), last_entry_min: Math.round(le) };
     await apPut({ cfg });
     if (JSON.stringify(cfg) !== JSON.stringify(cur)) {
-      const txt = `Autopilot limits set by ${by}: ${cfg.max_trades} trade${cfg.max_trades === 1 ? "" : "s"} a day, off after ${cfg.max_losses || "no"} losing trade${cfg.max_losses === 1 ? "" : "s"}, no new trade from ${fmtMin(cfg.last_entry_min)} ET`;
+      const txt = `OttoPilot limits set by ${by}: ${cfg.max_trades} trade${cfg.max_trades === 1 ? "" : "s"} a day, off after ${cfg.max_losses || "no"} losing trade${cfg.max_losses === 1 ? "" : "s"}, no new trade from ${fmtMin(cfg.last_entry_min)} ET`;
       await activity("change", txt, by).catch(() => {});
       await logDesk("system", "Otto", txt + ".");
     }
   }
   if (body?.on === true) {
     const e = etParts(), st0 = await apGet();
-    if (!isTradingDay(e.date)) throw new Error("The market is closed today. Autopilot can be switched on on a trading day.");
+    if (!isTradingDay(e.date)) throw new Error("The market is closed today. OttoPilot can be switched on on a trading day.");
     if (!st0.on) {
       const stop = apStop(st0.cfg, await apTrades(e.date), e.min);
-      if (stop) throw new Error(`Autopilot can't start: today already reached ${stop}. Change the number in the Autopilot box if you want more.`);
+      if (stop) throw new Error(`OttoPilot can't start: today already reached ${stop}. Change the number in the OttoPilot box if you want more.`);
       const plan = await apBuildPlan();
       await apPut({ on: true, day: e.date, by, at: new Date().toISOString(), plan, off: null });
-      await logDesk("system", "Otto", `🛫 Autopilot ON — switched on by ${by}. Baby J now answers his own PRACTICE cards until ${st0.cfg.max_trades} trade${st0.cfg.max_trades === 1 ? "" : "s"}, ${st0.cfg.max_losses ? st0.cfg.max_losses + " losing trade" + (st0.cfg.max_losses === 1 ? "" : "s") + ", " : ""}or ${fmtMin(st0.cfg.last_entry_min)} ET, whichever comes first. ${apPlanLine(plan)} Practice only: a LIVE (real money) card still waits for a human tap. A card Baby J flags weak is left for Josh.`);
-      await activity("change", `Autopilot ON (by ${by})`, by).catch(() => {});
+      await logDesk("system", "Otto", `🛫 OttoPilot ON — switched on by ${by}. Baby J now answers his own PRACTICE cards until ${st0.cfg.max_trades} trade${st0.cfg.max_trades === 1 ? "" : "s"}, ${st0.cfg.max_losses ? st0.cfg.max_losses + " losing trade" + (st0.cfg.max_losses === 1 ? "" : "s") + ", " : ""}or ${fmtMin(st0.cfg.last_entry_min)} ET, whichever comes first. ${apPlanLine(plan)} Practice only: a LIVE (real money) card still waits for a human tap. A card Baby J flags weak is left for Josh.`);
+      await activity("change", `OttoPilot ON (by ${by})`, by).catch(() => {});
       if (marketClock().status === "open") {                                             // cards already waiting when it is switched on
         const wait: any[] = (await db("otto_actions?" + OQ() + "select=*&status=eq.paper_wait&order=created_at.asc&limit=6").catch(() => [])) || [];
         for (const a of wait) {
@@ -1901,6 +1901,61 @@ export async function autopilotRoute(body: any, who: string) {
   }
   await apTick().catch(() => {});
   return await apView();
+}
+
+/* ===================================================================== v5.9.1 (11 Nov 2026) — BAR DOWNLOADER for the backtest
+   Checklist item 1. Real 10-minute (or 5-minute) Robinhood bars, with volume, saved in table otto_bars so the two Winston 2 setups
+   can be tested on real prices (bars pulled into a chat arrive as text and cannot be calculated on). READ-ONLY market data: the
+   only Robinhood tool here is get_equity_historicals. Admin only. Nothing here is read by Jarvis, Winston or any card.
+   POST fn=bars_pull {symbols:["SPY","QQQ"], from:"2026-03-02", to:"2026-03-31", tf?:"10minute", chunk_days?:5}
+   Interpolated (gap-fill) bars and bars with a bad price are dropped and counted. Re-pulling a range overwrites the same rows. */
+export const BARS_MAX_DAYS = 35;
+export function barsRows(j: any, tf: string): { rows: any[]; interpolated: number; bad: number } {
+  const rows: any[] = []; let interpolated = 0, bad = 0;
+  for (const r of (j?.data?.results || j?.results || [])) {
+    const symbol = String(r?.symbol || "").toUpperCase();
+    for (const b of (r?.bars || [])) {
+      if (b?.interpolated) { interpolated++; continue; }
+      const t = Date.parse(b?.begins_at), o = Number(b?.open_price), hi = Number(b?.high_price), lo = Number(b?.low_price), c = Number(b?.close_price), v = Math.round(Number(b?.volume) || 0);
+      if (!symbol || !isFinite(t) || ![o, hi, lo, c].every((x) => isFinite(x) && x > 0) || hi < lo || v < 0) { bad++; continue; }
+      rows.push({ symbol, tf, t: new Date(t).toISOString(), o, h: hi, l: lo, c, v });
+    }
+  }
+  return { rows, interpolated, bad };
+}
+export async function barsPull(body: any, who: string) {
+  const symbols = [...new Set((Array.isArray(body?.symbols) ? body.symbols : []).map((x: any) => String(x || "").toUpperCase().trim()))] as string[];
+  if (!symbols.length || symbols.length > 10 || symbols.some((x) => !/^[A-Z.]{1,6}$/.test(x))) throw new Error("symbols: 1 to 10 tickers, letters only");
+  const tf = String(body?.tf || "10minute");
+  if (tf !== "10minute" && tf !== "5minute") throw new Error("tf must be 10minute or 5minute");
+  const isDay = (x: any) => /^\d{4}-\d{2}-\d{2}$/.test(String(x || "")) && isFinite(Date.parse(String(x) + "T00:00:00Z"));
+  if (!isDay(body?.from) || !isDay(body?.to)) throw new Error("from and to must be dates like 2026-03-02");
+  const t0 = Date.parse(body.from + "T00:00:00Z"), t1 = Date.parse(body.to + "T00:00:00Z") + 864e5;      // `to` is included
+  if (t1 <= t0) throw new Error("to must not be before from");
+  if ((t1 - t0) / 864e5 > BARS_MAX_DAYS) throw new Error(`at most ${BARS_MAX_DAYS} days per pull — ask in smaller pieces`);
+  const end = Math.min(t1, Date.now());
+  const step = Math.max(1, Math.min(10, Math.round(Number(body?.chunk_days) || 5))) * 864e5;
+  const by: Record<string, number> = {}, errors: string[] = [];
+  let calls = 0, saved = 0, interpolated = 0, bad = 0, first: string | null = null, last: string | null = null;
+  for (let a = t0; a < end; a += step) {
+    const b = Math.min(a + step, end);
+    let j: any = null;
+    calls++;
+    try { j = mcpJson(await withTimeout(call("rh", "get_equity_historicals", { symbols, interval: tf, start_time: new Date(a).toISOString(), end_time: new Date(b).toISOString(), bounds: "regular" }), 25_000, "bars")); }
+    catch (e) { errors.push(`${new Date(a).toISOString().slice(0, 10)}: ${String((e as Error)?.message || e).slice(0, 160)}`); continue; }
+    const got = barsRows(j, tf);
+    interpolated += got.interpolated; bad += got.bad;
+    for (let i = 0; i < got.rows.length; i += 500) {
+      const part = got.rows.slice(i, i + 500);
+      try {
+        await db("otto_bars?on_conflict=symbol,tf,t", { method: "POST", headers: { prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify(part) });
+        saved += part.length;
+        for (const r of part) { by[r.symbol] = (by[r.symbol] || 0) + 1; if (!first || r.t < first) first = r.t; if (!last || r.t > last) last = r.t; }
+      } catch (e) { errors.push(`save ${new Date(a).toISOString().slice(0, 10)}: ${String((e as Error)?.message || e).slice(0, 160)}`); }
+    }
+  }
+  await activity("change", `Bars saved for the backtest: ${symbols.join(", ")} ${tf} ${body.from} → ${body.to}: ${saved} bars${errors.length ? `, ${errors.length} error(s)` : ""}`, who.split("@")[0]).catch(() => {});
+  return { ok: true, tf, symbols, from: body.from, to: body.to, calls, saved, by, first, last, dropped: { interpolated, bad }, errors };
 }
 
 async function actOn(id: string, decision: string, who: string, why: any = null, opts: any = {}) {
@@ -3778,7 +3833,7 @@ export async function scoreTick(budget = 6) {
       if (a.status === "paper_taken" && Array.isArray(r) && r.length && (o.state === "win" || o.state === "loss")) await logDesk("system", "Otto", practiceStopLine(a, o), a.id).catch(() => {});
     }
   }
-  await apTick().catch(() => {});   // v5.9: Autopilot's loss stop / last entry time, checked with every score pass
+  await apTick().catch(() => {});   // v5.9: OttoPilot's loss stop / last entry time, checked with every score pass
   return { ok: true, graded: n };
 }
 // v5.0 ROOMS: after the house pass, the same tick runs in each member's room (their practice trades are closed / scored by
@@ -5921,7 +5976,7 @@ export function practiceStats(acts: any[], book: { start: number; since: string 
   const ov = cards.filter((a: any) => (a.plan?.override || noWhy(a)) && a.status === "paper_taken");   // v5.7: a why left unanswered counts
   const ovScored = ov.filter((a: any) => a.outcome && ["win", "loss"].includes(a.outcome.state));
   const whys = answered.filter((a: any) => a.plan?.josh_why || a.plan?.josh_reject_why);
-  // v5.9: trades Autopilot took are on their own line, split on plan / off plan; "josh" is everything Josh approved himself
+  // v5.9: trades OttoPilot took are on their own line, split on plan / off plan; "josh" is everything Josh approved himself
   const apc = taken.filter((a: any) => a.plan?.autopilot);
   const grp = (xs: any[]) => ({ n: xs.length, wins: xs.filter((a: any) => a.outcome?.state === "win").length, losses: xs.filter((a: any) => a.outcome?.state === "loss").length,
     est: Math.round(xs.reduce((s: number, a: any) => s + est(a), 0)) });
@@ -7383,7 +7438,7 @@ export async function runningNow(): Promise<string> {
 - 🛡 Protected trades: ${(prot || []).length ? prot.map((r: any) => `${r.title} (Robinhood stop at $${r.exit?.stop_option}, TradingView alerts wrong-if ${r.exit?.wrong_if} / TP1 ${r.exit?.tp1})`).join("; ") : "none"}.
 - Auto-close: ${L.auto_close ? `ON — position check every ${Math.max(5, Number(L.review_min) || 15)} min while a trade is open (HOLD or CLOSE only)` : "OFF"}.
 - TradingView alert fires read every 2 min. Otto Signals watcher: ${beatOk ? "on" : "NOT reporting — signals may be missed"}.
-- 🛫 Autopilot: ${apS?.on ? `ON (switched on by ${apS.by || "the trader"}) — the SERVER answers your new PRACTICE cards for you the moment you build them; say so plainly if asked. Stops at ${apS.cfg.max_trades} trades, ${apS.cfg.max_losses} losing trades or ${fmtMin(apS.cfg.last_entry_min)} ET. A LIVE card still needs a human tap; a card you flag weak is left for Josh` : "OFF — every practice card waits for Josh's Approve or Reject"}.
+- 🛫 OttoPilot: ${apS?.on ? `ON (switched on by ${apS.by || "the trader"}) — the SERVER answers your new PRACTICE cards for you the moment you build them; say so plainly if asked. Stops at ${apS.cfg.max_trades} trades, ${apS.cfg.max_losses} losing trades or ${fmtMin(apS.cfg.last_entry_min)} ET. A LIVE card still needs a human tap; a card you flag weak is left for Josh` : "OFF — every practice card waits for Josh's Approve or Reject"}.
 To make a new promise true: schedule_check (a timed look + ping) or add_watch_level (a price level). Otherwise say plainly you can't.${earsHeardBlock(earsSt, day)}`;
 }
 
@@ -7645,7 +7700,7 @@ export async function recapExtras(day: string) {
   const sig = (bs || []).filter((b: any) => b.timing).map((b: any) => `- batch ${b.id}: ${(b.cards || []).length} card(s), post → card ${b.timing.total_ms != null ? Math.round(b.timing.total_ms / 1000) + "s" : "?"}${b.error ? " — " + b.error : ""}`);
   const st = await setting("selftest_last").catch(() => null);
   const apT = await apTrades(day).catch(() => []);   // v5.9
-  return (apT.length ? `AUTOPILOT (today): ${apRecap(apT)}\nGive Autopilot its own line in the recap, separate from the trades Josh approved himself.\n` : "") + `JARVIS PROMISES (today): ${pr?.day === day ? `${pr.made} made, ${pr.backed} backed, ${pr.corrected} corrected by the server check` : "none checked"}\n` +
+  return (apT.length ? `OTTOPILOT (today): ${apRecap(apT)}\nGive OttoPilot its own line in the recap, separate from the trades Josh approved himself.\n` : "") + `JARVIS PROMISES (today): ${pr?.day === day ? `${pr.made} made, ${pr.backed} backed, ${pr.corrected} corrected by the server check` : "none checked"}\n` +
     `SIGNAL SELF-TEST: ${st?.at && etParts(new Date(st.at)).date === day ? (st.ok ? `passed (${st.secs}s)` : "FAILED") : "did not run"}\n` +
     `SIGNAL CARD TIMES (today):\n${sig.join("\n") || "(no signal cards built)"}\nPut one line in the recap: promises made/backed/corrected and the signal timings.`;
 }
@@ -8609,7 +8664,7 @@ Deno.serve(async (req) => {
       return json({ ok: true, email: claims.email || null, anonymous: !!claims.is_anonymous, desk: !!u,
         ...(u ? await ROOM.run({ owner: u.email }, () => meInfo(u)) : {}) });
     }
-    if (["desk", "act", "autopilot", "panel", "desk_log", "oauth_start", "oauth_finish", "conn_status", "disconnect",
+    if (["desk", "act", "autopilot", "bars_pull", "panel", "desk_log", "oauth_start", "oauth_finish", "conn_status", "disconnect",
          "sentiment", "market_desk", "journal", "why_out", "report_card", "trade_reason", "review_get", "review_build", "score", "morning_now", "ticket", "limits_get", "limits_set", "house_rules_get", "house_rules_set", "watch_get", "watch_set", "watch_scan", "arm_callouts", "ears_arm", "ears_dismiss", "ears_remove", "ears_fix", "ears_mode", "ears_state", "performance", "help", "jason_today", "jason_sweep", "jason_score",
          "push_key", "push_sub", "push_list", "push_remove", "push_test", "layout_get", "layout_set",
          "signals_feed", "signal_img", "signals_cfg", "signals_cfg_set", "signal_chat", "signal_chat_clear", "selftest_now",
@@ -8650,6 +8705,7 @@ Deno.serve(async (req) => {
       }
       if (fn === "act" && body.why_only) return json({ ok: true, action: await whyAttach(String(body.id || ""), who, body.why, body.tp1 ?? null) });   // v5.7
       if (fn === "act") return json({ ok: true, action: await actOn(String(body.id || ""), String(body.decision || ""), who, body.decision === "approve" ? body.why : (body.why_not ?? body.why), { fill_now: !!body.fill_now }) });
+      if (fn === "bars_pull") { if (!isAdmin) return json({ ok: false, error: "admin only" }, 403); return json(await barsPull(body, who)); }   // v5.9.1
       if (fn === "autopilot") return json(await autopilotRoute(req.method === "POST" ? body : null, who));   // v5.9
       if (fn === "why_out") return json(await whyOut(body, who));                                   // v3.41: the line after Close Now
       if (fn === "panel") return json(await panel());
