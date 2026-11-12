@@ -2755,7 +2755,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.9.1";
+const BUILD="5.9.3";
 // v5.7.1 (9 Nov): the brain has three settings — label + the next one in the cycle. Server: winApi("config_set",{model}) accepts opus | sonnet55 | sonnet.
 const WIN_BRAIN={opus:"Opus 5.5",sonnet55:"Sonnet 5.5",sonnet:"Sonnet 4.6"},WIN_BRAIN_NEXT={opus:"sonnet55",sonnet55:"sonnet",sonnet:"opus"};
 function winBrainLabel(m){return WIN_BRAIN[m]||WIN_BRAIN.opus}
@@ -4452,7 +4452,7 @@ function sbDraw(keep){
       <h3 style="margin-top:16px">Progression: running total since the start</h3><div id="sbLines">${sbLines(m)}</div>
       <div class="sb-note">Bars are each day's net (above the line = made money, below = lost). The lines add the days up, so you can see who is pulling ahead. Click a bar, a day above or a row below to jump to it. Winston's line starts on his first trade day.</div></div>
     <div class="sb-card"><h3>Full score sheet · ${esc(lab)}</h3><table class="sb-t">${sbSheet(m,r.ks)}</table>
-      <div class="sb-note">The shaded cell is the better one for that row. Both sides trade 1 contract. Josh + Baby J dollars are an <b>estimate</b> (price move × delta, same as the Score detail page). Winston's use real quotes in and out. So compare the signs and the habits, not the pennies. Winston's test trades (E1/E2) are left out.</div></div>
+      <div class="sb-note">The shaded cell is the better one for that row. ${winQty()>1?`Winston trades ${winQty()} contracts a trade, Josh + Baby J trade 1, so his dollars swing ${winQty()} times as far. `:winQty()===1?"Both sides trade 1 contract. ":"Josh + Baby J trade 1 contract; Winston trades his paper size (1 to 3). "}Josh + Baby J dollars are an <b>estimate</b> (price move × delta, same as the Score detail page). Winston's use real quotes in and out. So compare the signs and the habits, not the pennies. Winston's test trades (E1/E2) are left out.</div></div>
     <div class="sb-card"><h3>Day by day</h3><table class="sb-t">${sbDays(m,r.sel)}</table></div>
     <div class="sb-card"><h3>Every trade · ${sbDow(r.sel)} ${sbMD(r.sel)}, newest first</h3>
       <div class="sb-tabs" id="sbTabs"><button data-l="j" class="${SB.tab==="j"?"on":""}">Josh + Baby J</button><button data-l="w" class="${SB.tab==="w"?"on":""}">Winston</button></div>
@@ -4618,6 +4618,7 @@ async function winPrepSet(on){
   WIN.busy=false;if(DK.view==="winston")dkWinston(true);v4TopDraw();
 }
 document.addEventListener("click",e=>{if(e.target.closest("#v4wn")){e.stopPropagation();winPrepSet(!winPrepActive(WIN.j))}});
+function winQty(){const c=(typeof WIN!=="undefined"&&WIN.j&&WIN.j.config)||null;return c?Math.min(3,Math.max(1,Math.floor(+c.paper_contracts)||1)):0}   // v5.9.3: contracts per paper trade (0 = not loaded yet)
 function winStart(){const c=(typeof WIN!=="undefined"&&WIN.j&&WIN.j.config)||{};return(+c.paper_balance||4000).toLocaleString()}
 function winTabs(){return ""}
 function winStrip(j){
@@ -4731,8 +4732,8 @@ function winToday(j){
     const est=lv&&lv.est_pnl!=null?winN(lv.est_pnl):(bid!=null&&ent!=null?Math.round((bid-ent)*100*qty*100)/100:null);
     const asOf=lv&&lv.at?winET(lv.at):(lm.at?winET(lm.at):"");const now=lv&&lv.under!=null?winN(lv.under):winN(lm.under);
     const estTxt=est==null?`<span class="mut">unavailable</span>`:`<b class="${est>0?"up":est<0?"dn":""}" style="font-size:24px">${est<0?"−":est>0?"+":""}$${Math.abs(est).toFixed(0)}</b>`;
-    return `<div class="win-banner on"><div class="win-big"><span class="win-dot"></span>IN A TRADE NOW — ${esc(t.label||t.ticker)}</div>
-      <div class="win-row"><div><span class="mut">Bought</span><b>${ent!=null?"$"+ent.toFixed(2):"—"}</b></div><div><span class="mut">Since</span><b>${esc(winET(t.opened_at))}</b></div><div><span class="mut">Option now (sell price)</span><b>${bid!=null?"$"+bid.toFixed(2):"—"}</b></div>
+    return `<div class="win-banner on"><div class="win-big"><span class="win-dot"></span>IN A TRADE NOW — ${esc(t.label||t.ticker)}${qty>1?" × "+qty:""}</div>
+      <div class="win-row"><div><span class="mut">Bought</span><b>${ent!=null?"$"+ent.toFixed(2):"—"}${qty>1?` <span class="mut">× ${qty}</span>`:""}</b></div><div><span class="mut">Since</span><b>${esc(winET(t.opened_at))}</b></div><div><span class="mut">Option now (sell price)</span><b>${bid!=null?"$"+bid.toFixed(2):"—"}</b></div>
       <div><span class="mut">Profit/loss <span class="win-est">ESTIMATE</span></span>${estTxt}${asOf?`<div class="mut" style="font-size:11px">as of ${esc(asOf)}</div>`:""}</div></div>
       ${winLadder(t,now)}
       <div class="win-say"><b>Now:</b> holding ${esc(t.ticker)}, watching for a 10-minute close ${t.side==="put"?"over":"under"} ${esc(p.wrong_if_level)}, or a touch of ${esc(p.target_level)}.${p.breakeven_at?" Stop moved to breakeven.":""}${p.trail?" Trailing.":""}${passTxt} Flat by 3:50.</div></div>
@@ -4851,7 +4852,7 @@ async function winScore(j){
   const row=(a,b,cc2)=>`<tr><td>${a}</td><td class="mono">${b}</td><td class="mono">${cc2}</td></tr>`;
   return `
     <div class="dk-cardx" style="margin-bottom:12px"><div class="dk-h">Winston vs Josh + Baby J <b>side by side</b></div>
-      <div style="overflow:auto"><table class="dkt"><tr><th></th><th>Winston (paper, own $${winStart()}, 1 contract)</th><th>Josh + Baby J (real account)</th></tr>
+      <div style="overflow:auto"><table class="dkt"><tr><th></th><th>Winston (paper, own $${winStart()}, ${winQty()>1?winQty()+" contracts":"1 contract"})</th><th>Josh + Baby J (real account)</th></tr>
         ${row("Realized P&amp;L",winM(st.pnl_realistic),u?winM(u.pnl):"—")}
         ${row("Wins – losses",`${st.wins||0}–${st.losses||0}`,u?`${u.wins}–${u.losses}`:"—")}
         ${row("Trades counted",st.trades||0,u?(u.wins+u.losses):"—")}

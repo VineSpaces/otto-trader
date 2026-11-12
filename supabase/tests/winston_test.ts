@@ -1897,3 +1897,30 @@ Deno.test("v5.8 cost build: the tick prompt is split into a STABLE head (ruleboo
   assert(/COACH POSTS TODAY/.test(tail1) && /CHART SNAPSHOT/.test(tail1) && /TRIGGERS \(v4\.3\)/.test(tail1) && /Decide now/.test(tail1) && !/RULES:\n/.test(tail1), "tail = the data and the question");
   assert(tail1 !== tail2 && /SPY below 598/.test(tail2), "the tail changes (new post), the head does not");
 });
+
+/* =========================== v5.9.3: two contracts per paper trade =========================== */
+Deno.test("v5.9.3 paper_contracts 2: same contract, twice the cost, planned loss and P&L; R unchanged; excursion R stays per contract", async () => {
+  seed(); TABLES.winston_settings[0].value.paper_contracts = 2;
+  setNow("2026-10-14T14:11:00Z"); await setupCall();
+  const r1 = await X.tick();
+  assert(r1.ok && r1.results?.[0]?.ok, "opened: " + JSON.stringify(r1));
+  const t = TABLES.winston_trades[0];
+  eq([t.label, t.qty, t.entry_fill], ["NVDA 200C 10/16", 2, 2.5], "same contract as the 1-lot replay, 2 of them");
+  eq([t.plan.stop_option, t.plan.planned_loss, t.plan.qty], [1.8, 140, 2], "stop per contract unchanged; planned loss is the whole trade's");
+  setNow("2026-10-14T14:21:00Z"); W.bars.NVDA.push(barRow("2026-10-14T14:20:00Z", 200, 200.5, 197.8, 197.9));
+  await X.tick();
+  setNow("2026-10-14T14:31:00Z"); W.opts.opt1.bid = 1.60; W.opts.opt1.ask = 1.70; W.spot.NVDA = 197.9;
+  await X.tick();
+  const c = TABLES.winston_trades[0];
+  eq([c.status, c.exit_reason], ["closed", "wrong_if"], "exited");
+  eq([c.pnl_realistic, c.pnl_mid, c.spread_cost, c.pnl_double, c.r_multiple], [-180, -160, 20, -200, -1.29], "dollars doubled, R the same as one contract");
+  setNow("2026-10-14T20:20:00Z"); const rep: any = (await X.reportJob()).report;
+  eq(rep.balance, 3820, "balance 4000 - 180");
+});
+Deno.test("v5.9.3 paper_contracts: cash must cover every contract; the setting is clamped 1-3 and settable", async () => {
+  eq([X.paperQty({}), X.paperQty({ paper_contracts: 2 }), X.paperQty({ paper_contracts: 9 }), X.paperQty({ paper_contracts: 0 }), X.paperQty({ paper_contracts: "x" })], [1, 2, 3, 1, 1], "clamp");
+  seed(); TABLES.winston_settings[0].value.paper_contracts = 3; TABLES.winston_settings[0].value.paper_balance = 600;   // cash 600 / 3 = 200 a contract; the $250 contract does not fit three times
+  setNow("2026-10-14T14:11:00Z"); await setupCall();
+  await X.tick();
+  assert(!TABLES.winston_trades.some((t: any) => t.label === "NVDA 200C 10/16"), "did not buy 3 x $250 with $600");
+});

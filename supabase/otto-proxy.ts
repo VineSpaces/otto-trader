@@ -526,7 +526,7 @@ async function routine(watch: string[]) {
    for a number the cards already carry. */
 async function whatsMoving(apiKey: string) {
   const day = new Date().toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric", year: "numeric", timeZone: "America/New_York" });
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
+  const r = await aiFetch("whats_moving", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({
@@ -592,7 +592,7 @@ async function chat(req: Request, sys: string, cs: Chunk[], apiKey: string) {
       const send = (o: unknown) => ctrl.enqueue(enc.encode("data: " + JSON.stringify(o) + "\n\n"));
       try {
         for (let round = 0; round < 6; round++) {
-          const r = await fetch("https://api.anthropic.com/v1/messages", {
+          const r = await aiFetch("chat_v1", {
             method: "POST",
             headers: {
               "content-type": "application/json",
@@ -2433,9 +2433,51 @@ type DeskRun = { msgs: any[]; sys: string; tools: any[]; cs: Chunk[]; who: strin
   oneStep?: boolean; onCard?: (id: string) => Promise<void> };   // v3.23: a Signal card in ONE forced step (+ one retry), then stop   // v3.16: mustCard = a Signal call must end in a card; dryRun = the self-test (cards checked, not stored)
 type DeskResult = { said: string; cards: string[]; timedOut?: boolean; outOfRounds?: boolean; did: string[]; failed: string[]; finalText: string; dry?: any[]; errors?: string[]; cardRead?: string };
 
+/* v5.9.3 (Ifoma, 12 Nov: "I'm not sure how to find out who is actually pulling that API"): USAGE STAMPS. Every Claude answer that
+   passes through this function is read once more on its way out — the token counts Anthropic reports (plain input, cache write,
+   cache read, output) are written to otto_ai_log with a tag for the feature that asked and the model. The answer itself is not
+   changed, delayed or stored. A stamp that cannot be read or saved is dropped silently: measuring must never break a run. */
+export function aiUsage(text: string): { tin: number; tout: number; cache_w: number; cache_r: number } | null {
+  let u: any = null;
+  if (text.includes('"message_start"')) {                                               // a streamed answer: usage rides on message_start, the final output count on message_delta
+    for (const line of text.split("\n")) {
+      if (!line.startsWith("data: ") || !line.includes('"usage"')) continue;
+      try { const ev = JSON.parse(line.slice(6)); const x = ev.message?.usage || ev.usage; if (x) u = { ...(u || {}), ...x }; } catch { /* a cut line */ }
+    }
+  } else { try { u = JSON.parse(text).usage || null; } catch { /* not JSON */ } }
+  if (!u) return null;
+  const n = (x: any) => Math.max(0, Math.round(Number(x) || 0));
+  return { tin: n(u.input_tokens), tout: n(u.output_tokens), cache_w: n(u.cache_creation_input_tokens), cache_r: n(u.cache_read_input_tokens) };
+}
+export function aiMeter(r: Response, tag: string, model: string): Response {
+  try {
+    if (!(r instanceof Response) || !r.ok || !r.body || (TEST && !TEST.aiLog)) return r;
+    const own = owner(), dec = new TextDecoder();
+    let text = "";
+    const ts = new TransformStream<Uint8Array, Uint8Array>({
+      transform(c, ctl) { try { if (text.length < 3_000_000) text += dec.decode(c, { stream: true }); } catch { /* */ } ctl.enqueue(c); },
+      flush() {
+        try {
+          const u = aiUsage(text); if (!u) return;
+          const row = { tag: String(tag).slice(0, 60), model: String(model).slice(0, 60), owner: own, ...u };
+          if (TEST?.aiLog) { TEST.aiLog(row); return; }
+          background(db("otto_ai_log", { method: "POST", headers: { prefer: "return=minimal" }, body: JSON.stringify(row) }).catch(() => {}));
+        } catch { /* never breaks the answer */ }
+      } });
+    return new Response(r.body.pipeThrough(ts), { status: r.status, statusText: r.statusText, headers: r.headers });
+  } catch { return r; }
+}
+async function aiFetch(tag: string, init: RequestInit): Promise<Response> {
+  const r = await fetch("https://api.anthropic.com/v1/messages", init);
+  let model = "?"; try { model = JSON.parse(String(init.body)).model || "?"; } catch { /* */ }
+  return aiMeter(r, tag, model);
+}
+
 // The tool loop, shared by the live Desk (streamed) and the 8:45 run (silent).
 // v3.13: one Claude request, retried once on 429 / 5xx / overloaded, never past the run's deadline.
 async function claudeFetch(body: any, deadline: number): Promise<Response> {
+  const tag = String(body?._tag || "other");                                           // v5.9.3: who is asking — stamped with the tokens, never sent to Claude
+  if (body && "_tag" in body) { body = { ...body }; delete body._tag; }
   if (TEST?.claude) return TEST.claude(body);
   const rk = await roomKey();                                                          // v5.0: the room's key; the house's on cron paths
   const apiKey = rk.key;
@@ -2448,7 +2490,7 @@ async function claudeFetch(body: any, deadline: number): Promise<Response> {
       headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
       body: JSON.stringify(body),
     });
-    if (r.ok && r.body) return r;
+    if (r.ok && r.body) return aiMeter(r, tag, String(body.model || "?"));
     const t = (await r.text()).slice(0, 200);
     if (attempt === 0 && (r.status === 429 || r.status >= 500)) { await new Promise((z) => setTimeout(z, 3000)); continue; }
     throw new Error("claude HTTP " + r.status + " " + t);
@@ -2477,7 +2519,7 @@ export async function runDesk(o: DeskRun): Promise<DeskResult> {
     let r: Response;
     try {
       r = await claudeFetch({
-        model: MODEL, max_tokens: 2500, stream: true, tools, ...(force ? { tool_choice: { type: "tool", name: "propose_action" } } : {}),
+        _tag: "run:" + String(who || "desk"), model: MODEL, max_tokens: 2500, stream: true, tools, ...(force ? { tool_choice: { type: "tool", name: "propose_action" } } : {}),
         system: [{ type: "text", text: sys + NAME_RULE + GUARD_RULE, cache_control: { type: "ephemeral" } }, { type: "text", text: live }],
         messages: msgs,
       }, deadline);
@@ -3528,7 +3570,7 @@ async function weeklyReview(apiKey: string, who = "Jarvis") {
     for (const q of ["resistance support entry rejection bounce rates", "first 30 minutes gap trap", "size account percent", "exit entry candle runner TP1"])
       for (const h of search(cs, q, 6)) { const k = h.d + h.at + h.s.slice(0, 40); if (!seen.has(k)) { seen.add(k); hits.push(h); } }
     const sys = `You are Jarvis, writing Ifoma's Friday trade review on the Otto desk: direct, numbers first, no hype. Judge each trade against Jason Murray's method (material below). Cite Jason as (call date, MM:SS) only from the material given. Never invent a rule. Respond with JSON only: {"pattern": "2-4 sentences on what the winners and losers have in common", "one_thing": "one concrete thing to do differently next week", "rules": [{"rule": "short rule name", "followed": n, "broken": n}]}.\n\nJASON'S RULES:\n${alwaysOn(calls)}\n\nMATERIAL:\n${hits.slice(0, 18).map(fmt).join("\n\n")}`;
-    const r = await fetch("https://api.anthropic.com/v1/messages", {
+    const r = await aiFetch("weekly_review", {
       method: "POST", headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
       body: JSON.stringify({ model: await roomModel(), max_tokens: 1500, system: sys + NAME_RULE,
         messages: [{ role: "user", content: `Week of ${ws}. Closed trades (P&L in $):\n${JSON.stringify(items, null, 1).slice(0, 40000)}` }] }),
@@ -3712,7 +3754,7 @@ export async function reportCard(apiKey: string, build = false): Promise<any> {
   if (apiKey) {
     try {
       const sys = `You are Jarvis writing Josh's Friday report card from the numbers below — only from them. Talk to Josh directly, plain words, no praise padding, fair and direct. Respond with JSON only: {"followed": true|false|null, "comment": "two sentences on what the numbers say about this week", "rule": "ONE rule for next week, one sentence, specific and checkable from Otto's data"}. Never write "answered N of N" or "of N scored" when expired > 0 — expired cards were offered and left unanswered; say "answered A of O, E expired". "followed" = did he follow last week's rule, judged from the numbers (null if the numbers can't say). Never name the coach.` + NAME_RULE;
-      const r = await withTimeout(fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+      const r = await withTimeout(aiFetch("report_card", { method: "POST", headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
         body: JSON.stringify({ model: await roomModel(), max_tokens: 500, system: sys, messages: [{ role: "user", content: JSON.stringify(facts) }] }) }), 40_000, "report card");
       const j = await r.json();
       const txt = (j.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
@@ -3768,7 +3810,7 @@ export async function quizGrade(body: any, who: string, apiKey: string) {
   for (const q of QUIZ_QUESTIONS) for (const h of search(cs, q.search + " " + answers[q.id].slice(0, 80), 5)) { const k = h.d + h.at + h.s.slice(0, 40); if (!seen.has(k)) { seen.add(k); hits.push(h); } }
   const sys = `You are Jarvis grading Josh's pop-quiz answers on ${ticker} against the Otto Rules (the coaching-call material below). Grade ONLY from that material: "ok" when the answer matches what the calls teach, "half" when it is partly right or missing the key part, "no" when it contradicts the calls or is the fear/chasing habit the calls warn about. If the calls never covered a question, say so in the note and grade "half". Every note cites (call date, MM:SS) from the material — never invent a citation or a rule. Plain words, two sentences max per note, talk to Josh directly. Respond with JSON only: {"grades":[{"id":"picture","grade":"ok|half|no","note":"...","source":"call date, MM:SS"}, ... one per question in order], "fixes":["...","..."]} — fixes = the two most important things to fix before the next call, one sentence each.\n\nOTTO RULES (always on):\n${alwaysOn(calls)}\n\nMATERIAL:\n${hits.slice(0, 24).map(fmt).join("\n\n")}` + NAME_RULE;
   const user = QUIZ_QUESTIONS.map((q, i) => `Q${i + 1} [${q.id}] ${q.q}\nJosh: ${answers[q.id] || "(no answer)"}`).join("\n\n");
-  const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
+  const r = await aiFetch("quiz_grade", { method: "POST", headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model: await roomModel(), max_tokens: 1800, system: sys, messages: [{ role: "user", content: user }] }) });
   const j = await r.json();
   const txt = (j.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("");
@@ -4709,7 +4751,7 @@ async function jasonExtract(apiKey: string, src: { image?: { media_type: string;
     media_type: /^image\/(jpeg|png|webp|gif)$/.test(src.image.media_type) ? src.image.media_type : "image/jpeg", data: src.image.data } });
   content.push({ type: "text", text: (src.image ? "Screenshot from Discord, " : "Discord messages, ") + `dated ${src.day} (New York time).` +
     (src.text ? "\n\n" + src.text.slice(0, 20000) : "") + "\n\nRecord Jason's posts." });
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
+  const r = await aiFetch("post_extract", {
     method: "POST",
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model: await roomModel(), max_tokens: 4000, system: JASON_READ_SYS, tools: [JASON_TOOL],
@@ -5001,7 +5043,7 @@ async function sigExtract(apiKey: string, mentor: string, text: string, imgs: { 
   const content: any[] = imgs.slice(0, 3).map((i) => ({ type: "image", source: { type: "base64",
     media_type: /^image\/(jpeg|png|webp|gif)$/.test(i.mime) ? i.mime : "image/jpeg", data: i.data } }));
   content.push({ type: "text", text: `Discord messages from ${mentor}, ${day} (New York time).${imgs.length ? " The image(s) above are charts attached to the NEW messages." : ""}\n\n${text.slice(0, 20000)}\n\nRecord ${mentor}'s NEW posts.` });
-  const r = await fetch("https://api.anthropic.com/v1/messages", {
+  const r = await aiFetch("signal_extract", {
     method: "POST", signal: AbortSignal.timeout(75_000),         // v3.9.4: never hang the read
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model: MODEL, max_tokens: 4000, system: sigReadSys(mentor), tools: [SIG_TOOL],
@@ -5120,8 +5162,9 @@ export async function signalProcess(bid: number, ins: any[], imgs: { mime: strin
     const earlier = await db(`otto_signal_msgs?select=posted_at,text,imgs&posted_at=gte.${new Date(first - 45 * 60e3).toISOString()}&posted_at=lt.${new Date(first).toISOString()}&order=posted_at.asc&limit=12`).catch(() => []);
     const line = (r: any) => `[${nyTime(r.posted_at)}] ${r.text || "(no text)"}${r.imgs ? " [chart image attached]" : ""}`;
     const text = (earlier.length ? "EARLIER (already recorded — context only):\n" + earlier.map(line).join("\n") + "\n\n" : "") + "NEW:\n" + ins.map(line).join("\n");
-    const vt = await verifyTickers(await sigExtract(apiKey, cfg.mentor, text, imgs, day)).catch(() => null);
-    const posts = vt ? vt.posts : await sigExtract(apiKey, cfg.mentor, text, imgs, day);
+    const ex = await sigExtract(apiKey, cfg.mentor, text, imgs, day);   // v5.9.3: read once — a failed ticker check used to pay for the whole read (images and all) a second time
+    const vt = await verifyTickers(ex).catch(() => null);
+    const posts = vt ? vt.posts : ex;
     const { inserted, all } = await jasonSave(posts, day, "watcher", "Otto Signals");
     for (const q of vt?.asks || []) { await logDesk("system", "Otto", q); await notify("signal", `⚡ ${SIG_LABEL}: which stock?`, q.slice(0, 180), "./#desk"); }
     const ids = all.map((r: any) => r.id);
@@ -6368,7 +6411,7 @@ async function performance(apiKey: string, wantRead: boolean, fresh = false) {
   if (CACHE[readKey]) out.read = CACHE[readKey].v;
   else if (wantRead && apiKey) {
     try {
-      const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST",
+      const r = await aiFetch("performance", { method: "POST",
         headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
         body: JSON.stringify({ model: await roomModel(), max_tokens: 300,
           system: "You are Jarvis on the Otto trading desk, writing the 2–3 sentence summary at the top of Ifoma and Josh's Results page. They trade as one team. Plain words, numbers first, no hype, no lecturing. Say where they are against their limits and the one thing that matters most. Never give sizing beyond their own limits.",
@@ -6823,7 +6866,7 @@ async function earsExtract(newText: string, context: string, known: string[] = [
   const T = (globalThis as any).__OTTO_TEST__;
   if (T?.earsExtract) return T.earsExtract(newText, context, known);
   const apiKey = Deno.env.get("ANTHROPIC_KEY") || "";
-  const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST", signal: AbortSignal.timeout(40_000),
+  const r = await aiFetch("ears", { method: "POST", signal: AbortSignal.timeout(40_000),
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model: MODEL, max_tokens: 1500, tools: [EARS_TOOL], tool_choice: { type: "tool", name: "record_levels" },
       system: `You listen to a live trading call transcribed from speech (it can mishear words and tickers). Record ONLY price levels for a specific stock that the speaker clearly SAID in the NEWEST text: the stock must be named in the same sentence or the one before (a company name counts: Micron = MU, SK Hynix = SKHY), and the number must be given as support, resistance, a reclaim, a break, a target, a gap, a moving average or the line that negates the idea. Prefer these names when the speech is close to one of them: ${known.slice(0, 80).join(", ")}. Never invent or round a number, never attach a number to a stock he did not name, never record a number that is a time, a percentage, an option price, a dollar P&L or an account size, skip index futures and yields. A stray number with no clear stock is NOT a level. If unsure, leave it out. Return an empty list when there are none. A level needs a JOB (above / below / hold / reclaim / target / support / resistance): where the stock is trading right now is NOT a level (kind "price"), and weekly tops and bottoms or consolidation edges are context (kind "range"); everything else is kind "level".`,
@@ -7247,7 +7290,7 @@ FORMAT — markdown, exactly these headings, skip a heading only if it would be 
 (scheduled events from the calendar given, open positions, anything they said they'd do tomorrow)`;
 
 async function claudeText(body: any, budgetMs = 90_000): Promise<string> {
-  const r = await claudeFetch({ ...body, stream: true }, Date.now() + budgetMs);
+  const r = await claudeFetch({ _tag: "text", ...body, stream: true }, Date.now() + budgetMs);
   const reader = r.body!.getReader(), dec = new TextDecoder();
   let buf = "", out = "";
   while (true) {
@@ -7314,7 +7357,7 @@ async function helpAnswer(body: any, apiKey: string) {
   while (hist.length && hist[0].role !== "user") hist.shift();
   if (!hist.length || hist[hist.length - 1].role !== "user") throw new Error("ask a question");
   const L = await getLimits();
-  const r = await fetch("https://api.anthropic.com/v1/messages", { method: "POST",
+  const r = await aiFetch("help", { method: "POST",
     headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
     body: JSON.stringify({ model: await roomModel(), max_tokens: 700,
       system: [{ type: "text", text: HELP_SYS + NAME_RULE + `\n\nCURRENT LIMITS: ${JSON.stringify({ phase: L.phase, max_trade_loss: L.max_trade_loss, weekly_loss: L.weekly_loss, max_trades_day: L.max_trades_day, monthly_goal_pct: L.monthly_goal_pct, warn_pct: L.warn_pct, big_day: L.big_day })}`, cache_control: { type: "ephemeral" } }],
@@ -7739,7 +7782,7 @@ const prepAuthor = (a: any) => PREP_AUTHORS.has(String(a)) ? String(a) : "Ifoma"
 
 // One forced tool call; returns the tool input. Streams through claudeFetch (so tests and retries behave the same).
 async function claudeTool(body: any, toolName: string, budgetMs = 90_000): Promise<any> {
-  const r = await claudeFetch({ ...body, stream: true, tool_choice: { type: "tool", name: toolName } }, Date.now() + budgetMs);
+  const r = await claudeFetch({ _tag: "tool:" + toolName, ...body, stream: true, tool_choice: { type: "tool", name: toolName } }, Date.now() + budgetMs);
   const reader = r.body!.getReader(), dec = new TextDecoder();
   let buf = "", json = "";
   while (true) {
@@ -8920,7 +8963,7 @@ Deno.serve(async (req) => {
       if (!apiKey) return json({ ok: false, error: "ANTHROPIC_KEY secret is not set" }, 500);
       const b = await req.json().catch(() => ({}));
       if (!b.system || !b.user) return json({ ok: false, error: "system and user required" }, 400);
-      const r = await fetch("https://api.anthropic.com/v1/messages", {
+      const r = await aiFetch("write", {
         method: "POST",
         headers: { "content-type": "application/json", "x-api-key": apiKey,
                    "anthropic-version": "2023-06-01" },
@@ -8967,7 +9010,7 @@ Deno.serve(async (req) => {
       if (img) content.push({ type: "image", source: { type: "base64",
         media_type: /^image\/(jpeg|png|webp|gif)$/.test(img.media_type) ? img.media_type : "image/jpeg", data: img.data } });
       content.push({ type: "text", text: planText({ ...plan, hasImage: !!img }) });
-      const r = await fetch("https://api.anthropic.com/v1/messages", {
+      const r = await aiFetch("plan", {
         method: "POST",
         headers: { "content-type": "application/json", "x-api-key": apiKey, "anthropic-version": "2023-06-01" },
         body: JSON.stringify({
