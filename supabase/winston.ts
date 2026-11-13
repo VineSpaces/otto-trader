@@ -127,12 +127,35 @@ export function etToUtcMs(date: string, min: number): number {
 // exit has a floor, and limits_override lets Winston drop the live daily stop without touching Josh's limits. mode "strict" = v3.31 behaviour.
 export const CONFIG_DEFAULTS: any = { enabled: true, paper_balance: 4000, own_idea_from_min: 600, coach_idea_from_min: 571,
   spread_cap_pct: 1, min_contract_price: 1, coach_chase_pct: 0.5,   // v5.3
+  min_days_to_exp: 2, exp_next_week_from_wd: 4,   // v5.9.4 (Ifoma, 13 Nov, after the coach call of 12 Nov): the expiration rule Baby J already had. No contract with fewer than N TRADING days left (0 = off); from this weekday on (4 = Thursday; 0 = off) this week's expirations are skipped for next week's.
   paper_contracts: 1,   // v5.9.3 (Ifoma, 12 Nov): contracts per PAPER trade, 1-3. Every per-trade limit is per contract, so the trade's cost, planned loss and P&L scale with it. Live size is its own cap (LIVE contracts).
   model: "opus", max_loss_usd: 100, max_loss_pct_premium: 35,   // v5.6: the brain switch; the loss cap per trade (dollars AND share of the premium — the tighter one wins): spread in dollars ≤ 1% of the book; no contract under $1.00; a coach level more than 0.5% behind price is a chase
  
   last_entry_min: 930, default_time_exit_min: 180, flat_min: 950, max_open: 1, mode: "strict", min_time_exit_min: 0, limits_override: {},
   universe: ["SPY", "QQQ", "NVDA", "TSLA", "AAPL", "MSFT", "META", "AMZN", "GOOGL", "AMD", "PLTR", "MU"] };
 export const paperQty = (cfg: any) => Math.min(3, Math.max(1, Math.floor(num(cfg?.paper_contracts)) || 1));   // v5.9.3
+// v5.9.4: the expiration rule (coach, 12 Nov: "he should be taking that trade for next Friday expiration"; Otto Rules: "after Wednesday, not this Friday's contract").
+// Both numbers are settings. It is a PICKER rule, not a block: the next valid expiration is used; if none is inside the 10-day window the idea is passed and shadowed as before.
+export function tradingDaysTo(date: string, exp: string): number {
+  let n = 0;
+  for (let d = addDays(date, 1), i = 0; d <= exp && i < 60; d = addDays(d, 1), i++) if (isTradingDay(d)) n++;
+  return n;
+}
+export function expRule(cfg: any) {
+  const a = cfg?.min_days_to_exp, b = cfg?.exp_next_week_from_wd;
+  const minDays = a == null || !isFinite(Number(a)) ? 2 : Math.min(5, Math.max(0, Math.floor(Number(a))));
+  const fromWd = b == null || !isFinite(Number(b)) ? 4 : Math.min(5, Math.max(0, Math.floor(Number(b))));
+  return { minDays, fromWd };
+}
+export function pickExpirations(all: string[], date: string, cfg: any): string[] {
+  const { minDays, fromWd } = expRule(cfg);
+  const wd = new Date(date + "T12:00:00Z").getUTCDay();
+  const friday = addDays(mondayOf(date), 4);
+  return (all || []).filter((d) => d > date && d <= addDays(date, 10))
+    .filter((d) => tradingDaysTo(date, d) >= minDays)
+    .filter((d) => !(fromWd >= 1 && wd >= fromWd && d <= friday))
+    .slice(0, 2);
+}
 export const isDataMode = (cfg: any) => String(cfg?.mode || "strict") === "data";
 export async function getConfig() {
   const r = await db("winston_settings?key=eq.config&select=value").catch(() => null);
@@ -919,10 +942,10 @@ export async function equityState(cfg: any, day: string): Promise<Equity & { ope
 
 /* ------------------------------------------------------------------ opening and closing paper trades */
 
-async function optionRows(sym: string, side: "call" | "put", spot: number, date: string): Promise<Row[]> {
+async function optionRows(sym: string, side: "call" | "put", spot: number, date: string, cfg: any = {}): Promise<Row[]> {
   const ch = await md("rh", "get_option_chains", { underlying_symbol: sym });
   const chain = (ch?.data?.chains || []).find((c: any) => c.symbol === sym && c.can_open_position !== false) || (ch?.data?.chains || [])[0];
-  const exps: string[] = (chain?.expiration_dates || []).filter((d: string) => d > date && d <= addDays(date, 10)).slice(0, 2);
+  const exps: string[] = pickExpirations(chain?.expiration_dates || [], date, cfg);   // v5.9.4: was the nearest two with no rule
   if (!exps.length) return [];
   const lo = spot * 0.95, hi = spot * 1.05;
   const ins: any[] = [];
@@ -1049,7 +1072,7 @@ export async function tryOpen(ctx: Ctx, d: Decision, spot: number, coachCall: bo
   const openNow = eq.open.length;
   const dataMode = isDataMode(cfg);
   let rows: Row[];
-  try { rows = await optionRows(d.ticker, d.side, spot, day); } catch (e) { const m = "Could not read the option chain: " + String((e as Error).message).slice(0, 120); await recordIdea(day, d, "blocked", m); return { opened: false, why: m }; }
+  try { rows = await optionRows(d.ticker, d.side, spot, day, cfg); } catch (e) { const m = "Could not read the option chain: " + String((e as Error).message).slice(0, 120); await recordIdea(day, d, "blocked", m); return { opened: false, why: m }; }
   const maxSpreadUsd = num(cfg.spread_cap_pct) > 0 ? round2(eq.equity * num(cfg.spread_cap_pct) / 100) : Infinity;   // v5.3: spread in dollars ≤ 1% of the book
   const qty = paperQty(cfg);   // v5.9.3: the pick is per contract (same contract as before); the cash has to cover all of them
   const pick = pickContract(rows, lim.capUsd, round2(eq.cash / qty), dataMode, coachCall, maxSpreadUsd, num(cfg.min_contract_price));
@@ -1909,6 +1932,7 @@ export async function tick(opts: { force?: boolean } = {}): Promise<any> {
     const prepTxt = prepRec && prepRec.day === day && (prepRec.notes || (prepRec.ideas || []).length) ? `YOUR PRE-OPEN PREP (your own notes from before the bell, ${String(prepRec.at || "").slice(11, 16)} UTC — context only, re-check against the live chart): ${JSON.stringify({ notes: prepRec.notes, plans: prepRec.ideas }).slice(0, 2500)}\n` : "";
     const stable = `RULES:\n${ruleText}
 READ THE COACH'S POST KINDS: a "result" post (sold, trimmed, took profit, stopped) is his EXIT on that name, not a fresh entry — a tail like "and play the bounce" after a sale is not a new buy unless he gives a new level. A "level" post names where he SELLS TO or buys from; do not enter a call within $0.50 of a level he sells into (W21). Let price come to you (W20): no re-entry on a name above where the last trade got out. Don't chase a move that's done (W26): a name already down big today is not a fresh put.
+EXPIRATION (v5.9.4): the code gives every trade time. It never buys a contract that is about to expire, and on Thursday and Friday it skips this week's expiration and takes next week's. The contract costs more and moves slower than a one-day contract, so pick levels the stock can reach today. You are still flat by the close.
 SPREAD (v5.3): the bid/ask spread is your biggest cost — $1,168 paid in spread against $482 net profit through 2 Nov. Liquid names only: the contract picker takes nothing wider than 8% of mid, nothing wider than 1% of the book in dollars, and nothing under $1.00 (no lottery tickets). TIME LEFT: no new entry with less time to the 3:50 flat than the ${num(cfg.min_time_exit_min) || 0}-minute minimum hold. Each snapshot row carries "context": the 20-day range, 5-day trend, yesterday's high/low/close and the pre-market range — the chart the coach reads.
 COACH'S RULES OF 29 OCT (brain PB-1029-01…09, now with the numbers to use): VWAP RECLAIM (02) — price lost VWAP and closed back above it; allow a variance of ${VWAP_VARIANCE_PCT}% of price around VWAP (the coach: a % of price, flexed by order blocks and sentiment; this is the starting default) and enter AFTER the reclaim, as a trigger. VWAP FLATTENS after earnings (01/06) — trade the retrace to VWAP that holds, not the opening pop. PRE-MARKET HIGH/LOW (03) — a 10-minute close through the pre-market high can open a NEW long, through the pre-market low a NEW short (the coach confirmed a new trade is fine; W3 still means no adding). RANGE BREAK (04) — a close through LAST FULL WEEK's low can take puts, through its high can take calls; the PRIOR MONTH's range is the same signal and stronger. Each snapshot row's "context" now carries both ranges when the broker returned them.
 COACH POSTS ARE LEVELS (v5.3): a coach idea (source coach:N) is only filled on a 10-minute CLOSE through a level YOU name in trigger_level — read the post, decide what it is, pick the level (his entry, his "above/below X", a reclaim, a break). A LEVEL post with no usable number is context, not a trade: pass it with that reason. A level the price has already run more than ${num(cfg.coach_chase_pct) || 0.5}% past is a chase — pass it (except WITH a DAY BIAS, below). Every NEW coach post gets a decision or a pass, no exceptions.
@@ -2237,6 +2261,14 @@ export async function setEnabled(body: any) {
     await putSetting("config", { ...cfg, max_open: n });
     await wlog("config", { max_open: n });
     return { ok: true, max_open: n, enabled: cfg.enabled };
+  }
+  if (body?.min_days_to_exp != null || body?.exp_next_week_from_wd != null) {   // v5.9.4: the expiration rule's two numbers
+    const next: any = {};
+    if (body?.min_days_to_exp != null) { const n = Math.round(Number(body.min_days_to_exp)); if (!(n >= 0 && n <= 5)) throw new Error("min_days_to_exp must be 0 to 5 (trading days; 0 = off)"); next.min_days_to_exp = n; }
+    if (body?.exp_next_week_from_wd != null) { const n = Math.round(Number(body.exp_next_week_from_wd)); if (!(n >= 0 && n <= 5)) throw new Error("exp_next_week_from_wd must be 0 to 5 (1 = Monday ... 5 = Friday; 0 = off)"); next.exp_next_week_from_wd = n; }
+    await putSetting("config", { ...cfg, ...next });
+    await wlog("config", next);
+    return { ok: true, ...next, enabled: cfg.enabled };
   }
   if (body?.paper_contracts != null) {   // v5.9.3
     const n = Math.round(Number(body.paper_contracts));

@@ -11,6 +11,8 @@ const TABLES: Record<string, any[]> = {};
 const touched = new Set<string>();
 const dbLog: { table: string; method: string }[] = [];
 let SERIAL = 0;
+// v5.9.4: three replays are Thursdays from before the expiration rule and their fixture holds only that week's Friday contract; they switch the rule off to keep replaying the day as it happened.
+const expOff = () => { Object.assign(TABLES.winston_settings[0].value, { min_days_to_exp: 0, exp_next_week_from_wd: 0 }); };
 function seed() {
   for (const k of Object.keys(TABLES)) delete TABLES[k];
   for (const k of ["winston_settings", "winston_rules", "winston_days", "winston_ideas", "winston_trades", "winston_log", "winston_shadows", "otto_jason", "otto_settings", "brain_versions"]) TABLES[k] = [];
@@ -771,8 +773,8 @@ Deno.test("v3.36 limits override: Winston can drop his daily stop while the live
 });
 Deno.test("replay 7 (v3.36): the 15 Oct SPY chase in DATA MODE opens WITH stamps (W20 re-entry, W21 sell-to, result post, loose picker); in STRICT mode it is blocked; the coach exit fires", async () => {
   // Data mode: config merged like SQL 024 does; W20-W23 active; the live limits row still says daily_losses 2.
-  seed(); setNow("2026-10-15T15:11:00Z");                                                        // Thu 15 Oct, 11:11 AM ET
-  TABLES.winston_settings[0].value = { enabled: true, paper_balance: 4000, mode: "data", max_open: 3, min_time_exit_min: 120, limits_override: { daily_on: false } };
+  seed(); expOff(); setNow("2026-10-15T15:11:00Z");                                                        // Thu 15 Oct, 11:11 AM ET
+  TABLES.winston_settings[0].value = { enabled: true, paper_balance: 4000, mode: "data", max_open: 3, min_time_exit_min: 120, limits_override: { daily_on: false } }; expOff();
   for (const id of ["W20", "W21", "W22", "W23"]) TABLES.winston_rules.push({ id, sort: 170, kind: "gate", source: "coach 2026-10-15", title: id, body: id, active: true, params: {} });
   W.spot = { SPY: 770.22, QQQ: 724, NVDA: 217 }; W.prev = { SPY: 769.6, QQQ: 729, NVDA: 221 }; W.calls.length = 0; W.ai.n = 0;
   W.opts = { c773: { strike: 773, bid: 1.56, ask: 1.57, delta: 0.35, vol: 100, oi: 4000 } };                // volume BELOW open interest: strict picker says no
@@ -804,7 +806,7 @@ Deno.test("replay 7 (v3.36): the 15 Oct SPY chase in DATA MODE opens WITH stamps
   assert(/^W20:/.test(TABLES.winston_ideas.find((i) => i.source === "coach:200")?.reason || ""), "blocked by W20: " + JSON.stringify(TABLES.winston_ideas.map((i) => i.reason)));
   eq(TABLES.winston_shadows.map((x) => x.rule), ["W20"], "a W20 shadow is booked (the ledger decides whether W20 stays hard)");
   // STRICT mode, same tape: the picker alone passes the idea (volume < OI), nothing opens
-  seed(); setNow("2026-10-15T15:11:00Z");
+  seed(); expOff(); setNow("2026-10-15T15:11:00Z");
   for (const id of ["W20", "W21", "W22", "W23"]) TABLES.winston_rules.push({ id, sort: 170, kind: "gate", source: "coach 2026-10-15", title: id, body: id, active: true, params: {} });
   W.spot = { SPY: 770.22, QQQ: 724, NVDA: 217 }; W.prev = { SPY: 769.6, QQQ: 729, NVDA: 221 }; W.ai.n = 0;
   W.opts = { c773: { strike: 773, bid: 1.56, ask: 1.57, delta: 0.35, vol: 100, oi: 4000 } };
@@ -886,8 +888,8 @@ Deno.test("v3.44 gates: W24-W26 stamp in data mode, block in strict mode, never 
 });
 Deno.test("replay 22 Oct (v3.44): defensive tape, LRCX -10.5% after earnings — the LRCX put is stamped W26, an AAPL call is stamped W24, a 9:41 coach call on LRCX is stamped W25; the AI is told the tape", async () => {
   const setup = () => {
-    seed();
-    TABLES.winston_settings[0].value = { enabled: true, paper_balance: 4000, mode: "data", max_open: 4, min_time_exit_min: 120, limits_override: { daily_on: false } };
+    seed(); expOff();
+    TABLES.winston_settings[0].value = { enabled: true, paper_balance: 4000, mode: "data", max_open: 4, min_time_exit_min: 120, limits_override: { daily_on: false } }; expOff();
     TABLES.winston_rules.push({ id: "W24", sort: 174, kind: "gate", source: "coach 2026-10-22", title: "W24", body: "W24", active: true, params: { nasdaq_pct: 1, bond_pct: 0.2 } });
     TABLES.winston_rules.push({ id: "W25", sort: 175, kind: "gate", source: "coach 2026-10-22", title: "W25", body: "W25", active: true, params: { open_wait_min: 15, earnings_wait_min: 30 } });
     TABLES.winston_rules.push({ id: "W26", sort: 176, kind: "gate", source: "coach 2026-10-22", title: "W26", body: "W26", active: true, params: { index_pct: 1.5, stock_pct: 5 } });
@@ -1673,8 +1675,8 @@ Deno.test("v5.5 A (pure): MU 5 Nov — 769 broken pre-market and on the first cl
 Deno.test("v5.5 A (tick): MU 5 Nov replay — at 9:41 the coach's 769 short is ARMED as a rebalance (not passed as a 3.5% chase); at 11:41 it fills; a reclaim clears the bias and drops it", async () => {
   const day = "2026-11-05";
   const go = async () => {
-    seed(); v55Reset();
-    TABLES.winston_settings[0].value = { enabled: true, paper_balance: 5000, mode: "data", max_open: 4, min_time_exit_min: 120, coach_idea_from_min: 571, own_idea_from_min: 585, limits_override: { daily_on: false }, coach_chase_pct: 0.5, spread_cap_pct: 1, min_contract_price: 1 };
+    seed(); expOff(); v55Reset();
+    TABLES.winston_settings[0].value = { enabled: true, paper_balance: 5000, mode: "data", max_open: 4, min_time_exit_min: 120, coach_idea_from_min: 571, own_idea_from_min: 585, limits_override: { daily_on: false }, coach_chase_pct: 0.5, spread_cap_pct: 1, min_contract_price: 1 }; expOff();
     W.prev = { MU: 795.23, QQQ: 676.9, TLT: 81.5 }; W.calls.length = 0; W.ai.n = 0; (W as any).atr = { MU: 50.85 };
     W.opts = { mu700p: { strike: 700, bid: 4.6, ask: 4.9, delta: -0.4, vol: 900, oi: 900, exp: "2026-11-06", type: "put" } };
     TABLES.otto_jason.push({ id: 660, day, posted_label: "9:02 AM", kind: "level", ticker: "MU", direction: "short", level: "769", words: "CHIPS WEAK / MU BELOW $769", late: false });
@@ -1923,4 +1925,41 @@ Deno.test("v5.9.3 paper_contracts: cash must cover every contract; the setting i
   setNow("2026-10-14T14:11:00Z"); await setupCall();
   await X.tick();
   assert(!TABLES.winston_trades.some((t: any) => t.label === "NVDA 200C 10/16"), "did not buy 3 x $250 with $600");
+});
+
+/* =========================== v5.9.4: the expiration rule (coach call of 12 Nov) =========================== */
+Deno.test("v5.9.4 pickExpirations: no contract with fewer than 2 trading days; Thursday and Friday take next week's", () => {
+  const P = X.pickExpirations;
+  eq(X.tradingDaysTo("2026-11-12", "2026-11-13"), 1, "Thu -> Fri = 1 trading day");
+  eq(X.tradingDaysTo("2026-11-13", "2026-11-16"), 1, "Fri -> Mon = 1 trading day (the weekend does not count)");
+  eq(X.tradingDaysTo("2026-11-12", "2026-11-20"), 6, "Thu -> next Fri");
+  eq(P(["2026-11-13", "2026-11-20", "2026-11-27", "2026-12-18"], "2026-11-12", {}), ["2026-11-20"], "12 Nov AAPL (weeklies): Thursday takes NEXT Friday, not tomorrow");
+  eq(P(["2026-11-12", "2026-11-13", "2026-11-16", "2026-11-17", "2026-11-20"], "2026-11-12", {}), ["2026-11-16", "2026-11-17"], "Thursday, daily expirations: not today, not this Friday");
+  eq(P(["2026-11-13", "2026-11-16", "2026-11-17", "2026-11-20"], "2026-11-13", {}), ["2026-11-17", "2026-11-20"], "Friday: Monday is one trading day away, so Tuesday is the first");
+  eq(P(["2026-10-14", "2026-10-15", "2026-10-16", "2026-10-23"], "2026-10-14", {}), ["2026-10-16", "2026-10-23"], "Wednesday: this Friday is allowed, tomorrow is not");
+  eq(P(["2026-11-10", "2026-11-11", "2026-11-13"], "2026-11-09", {}), ["2026-11-11", "2026-11-13"], "Monday: this Friday is allowed");
+  eq(P(["2026-11-13", "2026-11-16", "2026-11-20"], "2026-11-12", { min_days_to_exp: 0, exp_next_week_from_wd: 0 }), ["2026-11-13", "2026-11-16"], "both off = the old picker");
+  eq(P(["2026-11-13", "2026-11-16", "2026-11-20"], "2026-11-12", { min_days_to_exp: 0 }), ["2026-11-16", "2026-11-20"], "weekday rule alone still skips this Friday on a Thursday");
+  eq(P(["2026-11-13", "2026-11-20"], "2026-11-11", { exp_next_week_from_wd: 3 }), ["2026-11-20"], "the weekday is a setting: from Wednesday");
+  eq(P(["2026-11-13"], "2026-11-12", {}), [], "nothing valid inside the window = no contract (the idea is passed and shadowed)");
+  eq([X.expRule({}), X.expRule({ min_days_to_exp: "x", exp_next_week_from_wd: 9 })], [{ minDays: 2, fromWd: 4 }, { minDays: 2, fromWd: 5 }], "defaults and clamps");
+});
+Deno.test("v5.9.4 the rule reaches the real entry path: with min_days_to_exp 3 on a Wednesday he does not buy this Friday's contract", async () => {
+  seed(); TABLES.winston_settings[0].value.min_days_to_exp = 3;
+  setNow("2026-10-14T14:11:00Z"); await setupCall();
+  await X.tick();
+  assert(!TABLES.winston_trades.some((t: any) => t.label === "NVDA 200C 10/16"), "10/16 is 2 trading days away, under the minimum of 3");
+  seed(); setNow("2026-10-14T14:11:00Z"); await setupCall();
+  await X.tick();
+  eq(TABLES.winston_trades[0]?.label, "NVDA 200C 10/16", "default (2 days): the same Wednesday trade as before the rule");
+});
+Deno.test("v5.9.4 the two numbers are settings: set, validated, logged", async () => {
+  seed();
+  const r: any = await X.setEnabled({ min_days_to_exp: 3, exp_next_week_from_wd: 3 });
+  eq([r.ok, r.min_days_to_exp, r.exp_next_week_from_wd], [true, 3, 3], "set");
+  eq([TABLES.winston_settings[0].value.min_days_to_exp, TABLES.winston_settings[0].value.exp_next_week_from_wd], [3, 3], "stored");
+  let threw = 0;
+  try { await X.setEnabled({ min_days_to_exp: 9 }); } catch { threw++; }
+  try { await X.setEnabled({ exp_next_week_from_wd: -1 }); } catch { threw++; }
+  eq(threw, 2, "out of range refused");
 });
