@@ -1094,6 +1094,17 @@ svg.nc-svg{width:100%;height:auto;display:block}
 .dk.v4 .dk-rail button[data-go="prep"]{--c1:#FFB547;--c2:#B86A0E;--glow:rgba(255,181,71,.5)}
 .dk.v4 .dk-rail button[data-go="journal"]{--c1:#4FB6FF;--c2:#1F5FA8;--glow:rgba(79,182,255,.5)}
 .dk.v4 .dk-rail button[data-go="playbook"]{--c1:#3FD6C7;--c2:#147F76;--glow:rgba(63,214,199,.5)}
+.dk.v4 .dk-rail button[data-go="news"]{--c1:#F5C451;--c2:#B57F1C;--glow:rgba(245,196,81,.5)}
+/* v5.9.5 News */
+.nw-grid{display:grid;grid-template-columns:minmax(0,1fr) 280px;gap:14px;align-items:start}
+.nw-msg{background:var(--surface-2);border:1px solid var(--rule);border-radius:14px;padding:13px 16px;margin-bottom:10px}
+.nw-who{display:flex;justify-content:space-between;gap:8px;font-size:12px;margin-bottom:4px}.nw-who b{color:#F5C451;font-weight:600}.nw-who span{color:var(--ink-3)}
+.nw-t{font-weight:700;font-size:15px;margin-bottom:6px}
+.nw-msg p{margin:0 0 7px;font-size:14px;line-height:1.5}
+.nw-l{text-transform:uppercase;letter-spacing:.09em;font-size:10.5px;color:var(--ink-3);margin:8px 0 2px}
+.nw-src{font-size:12px;color:var(--ink-3);margin-top:6px}.nw-src a{color:var(--ink-3);text-decoration:underline}
+.nw-day{display:block;width:100%;text-align:left;padding:7px 0;border-top:1px solid var(--rule);font-size:13px;color:var(--ink-3)}.nw-day.on{color:var(--ink);font-weight:700}
+@media (max-width:900px){.nw-grid{grid-template-columns:1fr}}
 .dk.v4 .dk-rail button[data-go="winston"]{--c1:#9B8CFF;--c2:#5A48C9;--glow:rgba(155,140,255,.5)}
 .dk.v4 .dk-rail button[data-go="jason"]{--c1:#FF9F5C;--c2:#C25A17;--glow:rgba(255,159,92,.5)}
 .dk.v4 .dk-rail button[data-go="quiz"]{--c1:#F26BA6;--c2:#A8336B;--glow:rgba(242,107,166,.5)}
@@ -1207,7 +1218,7 @@ svg.nc-svg{width:100%;height:auto;display:block}
   .dk.v4 #dkLeft{display:none}
   .dk.v4 .dk-desk{grid-column:2;grid-row:4}.dk.v4 #dkRight{grid-column:3;grid-row:4}.dk.v4 .dk-page{grid-column:2/4;grid-row:4}
     /* the rail keeps the main guys; everything lives in the ★ Menu launcher */
-  .dk.v4 .dk-rail .dk-tabs button[data-go]:not([data-go="desk"]):not([data-go="scoreboard"]):not([data-go="homework"]):not([data-go="winston"]):not([data-go="playbook"]),.dk.v4 .dk-rail .dk-cust,.dk.v4 .dk-rail .dk-logo,.dk.v4 .dk-rail .dk-more,.dk.v4 .dk-rail .dk-morebox{display:none}
+  .dk.v4 .dk-rail .dk-tabs button[data-go]:not([data-go="desk"]):not([data-go="scoreboard"]):not([data-go="homework"]):not([data-go="winston"]):not([data-go="playbook"]):not([data-go="news"]),.dk.v4 .dk-rail .dk-cust,.dk.v4 .dk-rail .dk-logo,.dk.v4 .dk-rail .dk-more,.dk.v4 .dk-rail .dk-morebox{display:none}
   .dk.v4 .dk-head .dk-pill,.dk.v4 .dk-head .dk-who{display:none}
 }
 .dk.v4 .v4top{display:none}
@@ -1290,6 +1301,7 @@ body.otto-member .dk-rail button[data-go="winston"],body.otto-member #v4wn,body.
     <button data-go="prep" title="Pre-market: Prep, Market and Night Charts"><svg viewBox="0 0 24 24"><path d="M17 18a5 5 0 0 0-10 0"/><path d="M12 2v7M4.2 10.2l1.4 1.4M1 18h2M21 18h2M18.4 11.6l1.4-1.4M23 22H1M8 6l4-4 4 4"/></svg>Pre-market</button>
     <button data-go="journal"><svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>Journal</button>
     <button data-go="playbook"><svg viewBox="0 0 24 24"><path d="M2 4h7a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H2z"/><path d="M22 4h-7a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h8z"/></svg>Playbook</button>
+    <button data-go="news" title="News: the day's brief and updates. Baby J and Winston read it too"><svg viewBox="0 0 24 24"><path d="M4 5h13v14a2 2 0 0 0 2 2H6a2 2 0 0 1-2-2z"/><path d="M17 9h3v10a2 2 0 0 1-2 2"/><path d="M8 9h5M8 13h5M8 17h5"/></svg>News</button>
     <button data-go="winston" title="Winston: a separate paper-only trader on its own paper book that collects data"><svg viewBox="0 0 24 24"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/><path d="M9 16l3 2 3-2"/></svg>Winston</button>
     <button data-go="jason"><svg viewBox="0 0 24 24"><path d="M9 18h6M10 22h4"/><path d="M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z"/></svg>Calls</button>
     <button data-go="quiz" title="Pop Quiz: the coach's five questions, graded from the calls"><svg viewBox="0 0 24 24"><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/></svg>Quiz</button>
@@ -2755,7 +2767,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.9.3";
+const BUILD="5.9.5";
 // v5.7.1 (9 Nov): the brain has three settings — label + the next one in the cycle. Server: winApi("config_set",{model}) accepts opus | sonnet55 | sonnet.
 const WIN_BRAIN={opus:"Opus 5.5",sonnet55:"Sonnet 5.5",sonnet:"Sonnet 4.6"},WIN_BRAIN_NEXT={opus:"sonnet55",sonnet55:"sonnet",sonnet:"opus"};
 function winBrainLabel(m){return WIN_BRAIN[m]||WIN_BRAIN.opus}
@@ -3954,7 +3966,7 @@ async function dkOauthReturn(){
    4 Oct 2026, approved mockup otto-v3.1-mockup.html. The sentiment banner
    (Josh's intermarket sheet on live TradingView data, verdict only, no sizing),
    desktop Market / Journal / Review / Score / Jason pages inside the Desk shell. */
-const DK_VIEWS=["desk","scoreboard","charts","prep","market","perf","coach","journal","review","score","playbook","jason","winston","quiz","homework","more","help"];
+const DK_VIEWS=["desk","scoreboard","charts","prep","market","perf","coach","journal","review","score","playbook","jason","winston","quiz","homework","more","help","news"];
 function dkShow(v){
   if(!DK_VIEWS.includes(v))v="desk";
   DK.view=v;LS.set("dkView",v);
@@ -3963,7 +3975,7 @@ function dkShow(v){
   if(v==="desk"){dkRenderMsgs(true);return}
   const pg=$("#dkPage");pg.scrollTop=0;
   if(DK.locked){pg.innerHTML=`<div class="dk-lock"><h3>Locked</h3><p class="mut">Sign in with your Otto login to see this page.</p></div>`;return}
-  ({scoreboard:dkScoreboard,charts:dkCharts,prep:dkPrep,market:dkMarket,perf:dkPerf,coach:dkCoach,journal:dkJournal,review:dkReview,score:dkScore,playbook:dkPlaybook,jason:dkJason,winston:()=>dkWinston(),quiz:dkQuiz,homework:()=>dkHomework(),more:dkMore,help:dkHelp})[v]();
+  ({scoreboard:dkScoreboard,charts:dkCharts,prep:dkPrep,market:dkMarket,perf:dkPerf,coach:dkCoach,journal:dkJournal,review:dkReview,score:dkScore,playbook:dkPlaybook,news:dkNewsPage,jason:dkJason,winston:()=>dkWinston(),quiz:dkQuiz,homework:()=>dkHomework(),more:dkMore,help:dkHelp})[v]();
   dkSubBar();
 }
 const dkLoading=t=>`<div class="dk-empty" style="margin:60px auto">${esc(t||"Loading…")}</div>`;
@@ -4956,6 +4968,29 @@ function qzRender(){
    record; a rule is marked weak after 20 graded trades with average R below 0),
    the Feedback button, and the 5:15 PM daily recap (a Desk note, styled). */
 var PB_TITLES={};
+/* ===================================================================== v5.9.5 (13 Nov 2026) — NEWS
+   The day's brief (8:15 AM) and updates, written by Big J from public sources. Read-only feed; earlier days on the right.
+   Baby J reads today's posts on the Desk and in the morning read; Winston reads them in his prep and his entry window. */
+async function dkNewsPage(){
+  const pg=$("#dkPage");pg.innerHTML=dkLoading("Loading the news…");
+  let j;try{j=await dkApi("news_get")}catch(e){pg.innerHTML=dkErr(e);return}
+  if(DK.view!=="news")return;
+  const days=j.days||[],today=j.today||"";
+  const sel=DK.newsDay&&days.some(d=>d.day===DK.newsDay)?DK.newsDay:(days.some(d=>d.day===today)?today:(days[0]||{}).day||today);
+  const cur=days.find(d=>d.day===sel);
+  const dayLabel=d=>{try{return new Date(d+"T12:00:00Z").toLocaleDateString("en-US",{weekday:"short",month:"short",day:"numeric",timeZone:"UTC"})}catch(e){return d}};
+  const body=t=>String(t||"").split(/\n+/).filter(l=>l.trim()).map(l=>{const m=l.match(/^([A-Z][A-Z ]{2,28}):\s*(.*)$/);return m?`<div class="nw-l">${esc(m[1])}</div><p>${esc(m[2])}</p>`:`<p>${esc(l)}</p>`}).join("");
+  const src=a=>{const ok=(Array.isArray(a)?a:[]).filter(x=>x&&/^https?:\/\//.test(String(x.url||"")));return ok.length?`<div class="nw-src">Sources: ${ok.map(x=>`<a href="${esc(x.url)}" target="_blank" rel="noopener">${esc(x.name||"link")}</a>`).join(" · ")}</div>`:""};
+  const posts=cur?cur.posts.map(p=>`<div class="nw-msg"><div class="nw-who"><b>${esc(p.by||"Big J")} · ${p.kind==="update"?"Update":"Morning brief"}</b><span>${esc(dkDate(p.at))}</span></div><div class="nw-t">${esc(p.title||"")}</div>${body(p.text)}${src(p.sources)}</div>`).join(""):"";
+  const empty=`<div class="dk-empty" style="margin:40px auto">${sel===today?"No brief yet today. The morning brief posts at 8:15 AM on trading days, with a midday update around 12:30 PM.":"Nothing was posted on this day."}</div>`;
+  const list=(days.some(d=>d.day===today)?days:[{day:today,posts:[]},...days]).filter(d=>d.day).map(d=>`<button class="nw-day${d.day===sel?" on":""}" data-nwday="${esc(d.day)}">${esc(dayLabel(d.day))}${d.day===today?" · today":""}</button>`).join("");
+  pg.innerHTML=`<div class="dkp">
+    <div class="dkp-head"><h2>News</h2><span class="mut">${esc(dayLabel(sel))} · the day's brief and updates, from public sources. Information only: it never changes a rule, a limit or a level.</span></div>
+    <div class="nw-grid"><div>${posts||empty}</div>
+      <div><div class="dk-cardx" style="margin-bottom:12px"><div class="dk-h">Who reads this</div><div style="font-size:13px">Baby J reads today's news on the Desk and in the morning read. Winston reads it in his 8:41 and 9:21 prep and during his entry window.</div></div>
+      <div class="dk-cardx"><div class="dk-h">Days</div>${list}</div></div></div></div>`;
+  pg.querySelectorAll("[data-nwday]").forEach(b=>b.addEventListener("click",()=>{DK.newsDay=b.dataset.nwday;dkNewsPage()}));
+}
 async function dkPlaybook(){
   const pg=$("#dkPage");pg.innerHTML=dkLoading("Loading the Playbook…");
   let j;try{j=await dkApi("playbook_get")}catch(e){pg.innerHTML=dkErr(e);return}
@@ -7034,6 +7069,7 @@ function v4Pop(kind,arg){
 const V4_ICON={desk:'<path d="M4 5h16v10H9l-5 4z"/><path d="M8 9h8M8 12h5"/>',scoreboard:'<path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/>',prep:'<path d="M17 18a5 5 0 0 0-10 0"/><path d="M12 2v7M4.2 10.2l1.4 1.4M1 18h2M21 18h2M18.4 11.6l1.4-1.4M23 22H1M8 6l4-4 4 4"/>',journal:'<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>',playbook:'<path d="M2 4h7a3 3 0 0 1 3 3v13a2 2 0 0 0-2-2H2z"/><path d="M22 4h-7a3 3 0 0 0-3 3v13a2 2 0 0 1 2-2h8z"/>',winston:'<rect x="5" y="8" width="14" height="11" rx="3"/><path d="M12 8V4M9 13h.01M15 13h.01M9 16h6"/>',jason:'<path d="M3 10v4l11 5V5z"/><path d="M14 9a4 4 0 0 1 0 6M17 7a7 7 0 0 1 0 10"/>',quiz:'<rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',homework:'<path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3z"/><path d="M9 9h6M9 13h4"/>',charts:'<path d="M3 17l6-6 4 4 8-8"/><path d="M17 7h4v4"/>',market:'<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',help:'<circle cx="12" cy="12" r="10"/><path d="M9.1 9a3 3 0 0 1 5.8 1c0 2-3 3-3 3M12 17h.01"/>',classic:'<rect x="7" y="2" width="10" height="20" rx="2"/><path d="M11 18h2"/>',settings:'<circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9l2.1 2.1M17 17l2.1 2.1M4.9 19.1L7 17M17 7l2.1-2.1"/>',customize:'<path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',watch:'<path d="M2 12s4-7 10-7 10 7 10 7-4 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',list:'<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',star:'<path d="M12 2l3 7 7 .6-5.3 4.6 1.7 7.3L12 17.8 5.6 21.5l1.7-7.3L2 9.6 9 9z"/>',look:'<circle cx="12" cy="12" r="9"/><path d="M12 3a9 9 0 0 1 0 18z"/>'};
 const V4_TINT={desk:["#F5C451","#B57F1C"],scoreboard:["#2EE59D","#0E8F5C"],prep:["#FFB547","#B86A0E"],journal:["#4FB6FF","#1F5FA8"],playbook:["#3FD6C7","#147F76"],winston:["#9B8CFF","#5A48C9"],jason:["#FF9F5C","#C25A17"],quiz:["#F26BA6","#A8336B"],homework:["#5CA8FF","#2457B5"],charts:["#7FD1FF","#2B6FB3"],market:["#B0BEC5","#546E7A"],help:["#8A94A6","#3A4252"],classic:["#8A94A6","#3A4252"],settings:["#8A94A6","#3A4252"],customize:["#8A94A6","#3A4252"],watch:["#2EE59D","#0E8F5C"],list:["#F5C451","#B57F1C"],sun:["#FFB547","#B86A0E"]};
 V4_ICON.watchlist=V4_ICON.list;V4_ICON.watcher=V4_ICON.watch;V4_ICON.morning=V4_ICON.sun;V4_TINT.watchlist=V4_TINT.list;V4_TINT.watcher=V4_TINT.watch;V4_TINT.morning=V4_TINT.sun;V4_TINT.more=["#B0BEC5","#546E7A"];V4_ICON.more='<circle cx="5" cy="12" r="1.6"/><circle cx="12" cy="12" r="1.6"/><circle cx="19" cy="12" r="1.6"/>';
+V4_ICON.news='<path d="M4 5h13v14a2 2 0 0 0 2 2H6a2 2 0 0 1-2-2z"/><path d="M17 9h3v10a2 2 0 0 1-2 2"/><path d="M8 9h5M8 13h5M8 17h5"/>';V4_TINT.news=["#F5C451","#B57F1C"];   // v5.9.5
 const v4Svg=(k)=>`<svg viewBox="0 0 24 24" style="--c1:${(V4_TINT[k]||V4_TINT.help)[0]};--c2:${(V4_TINT[k]||V4_TINT.help)[1]}">${V4_ICON[k]||V4_ICON.help}</svg>`;
 /* ===================================================================== v5.9 (11 Nov 2026) — OTTOPILOT for Baby J
    Josh or Ifoma switches it on (top bar → OttoPilot). While it is on the SERVER answers Baby J's new practice cards; this
@@ -7141,7 +7177,7 @@ function v4TopDraw(){
 function v4Launcher(){
   v4Close();const o=document.createElement("div");o.id="v4ov";o.className="v4launch";
   const it=(k,l,s)=>`<button data-v4go="${k}" class="${DK.view===k?"on":""}">${v4Svg(k)}<span>${l}${s?`<small>${s}</small>`:""}</span></button>`;
-  o.innerHTML=`<div class="v4lp"><h4>Go to</h4><div class="g">${it("desk","Desk","Jarvis · cards · signals")}${it("scoreboard","Scoreboard","Josh + Baby J vs Winston")}${it("prep","Pre-market","Prep · Market · Night Charts")}${it("homework","Homework","the after-close read")}${it("winston","Winston","the paper trader")}${it("playbook","Playbook","the Otto Rules")}${it("jason","Calls","the coach's calls")}${it("quiz","Quiz","five questions, graded")}${it("journal","Journal","every trade, with its reason")}${it("charts","Night Charts","9 charts, ready by 7")}${it("more","Everything else","signals today · levels · brain")}${it("help","Help","")}</div>
+  o.innerHTML=`<div class="v4lp"><h4>Go to</h4><div class="g">${it("desk","Desk","Jarvis · cards · signals")}${it("scoreboard","Scoreboard","Josh + Baby J vs Winston")}${it("prep","Pre-market","Prep · Market · Night Charts")}${it("homework","Homework","the after-close read")}${it("winston","Winston","the paper trader")}${it("playbook","Playbook","the Otto Rules")}${it("news","News","the day's brief")}${it("jason","Calls","the coach's calls")}${it("quiz","Quiz","five questions, graded")}${it("journal","Journal","every trade, with its reason")}${it("charts","Night Charts","9 charts, ready by 7")}${it("more","Everything else","signals today · levels · brain")}${it("help","Help","")}</div>
     <h4 class="s">Desk tools</h4><div class="g">${it("watchlist","Watchlist","Treasure Hunt")}${it("watcher","Watcher","levels · every minute")}${it("autopilot","OttoPilot","Baby J trades alone")}${it("morning","Morning read","the three inputs")}${it("customize","Customize","move the cards")}</div>
     <h4 class="s">App</h4><div class="g">${it("settings","Settings","accounts · limits · push")}<button data-v4go="look">${v4Svg("look")}<span>Look<small>${V4.on?"new (v4) · switch to Classic":"classic · switch to new"}</small></span></button></div></div>`;
   o.addEventListener("click",e=>{if(e.target===o)v4Close()});
