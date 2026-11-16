@@ -35,3 +35,12 @@ Deno.test("v5.9.5 newsText: reads today's rows only and returns the block (or no
   assert(/TODAY'S NEWS/.test(t) && /OVERNIGHT: quiet\./.test(t), "block");
   assert(PATHS.some((p) => /^otto_news\?day=eq\.\d{4}-\d{2}-\d{2}&/.test(p)), "today only: " + PATHS.join(" | "));
 });
+
+Deno.test("v5.9.5 fix (16 Nov): the request list that routes into the Desk includes news_get, so the News tab is not answered 'unknown fn'", async () => {
+  const src = await Deno.readTextFile(new URL("../otto-proxy.ts", import.meta.url));
+  const i = src.indexOf('if (["desk", "act", "autopilot"');
+  assert(i > 0, "found the Desk request list");
+  const list = src.slice(i, src.indexOf("].includes(fn)", i));
+  assert(list.includes('"news_get"'), "news_get is in the Desk request list");
+  assert(list.includes('"playbook_get"'), "sanity: playbook_get is there too");
+});

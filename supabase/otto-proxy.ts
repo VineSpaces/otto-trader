@@ -8759,7 +8759,7 @@ Deno.serve(async (req) => {
          "sentiment", "market_desk", "journal", "why_out", "report_card", "trade_reason", "review_get", "review_build", "score", "morning_now", "ticket", "limits_get", "limits_set", "house_rules_get", "house_rules_set", "watch_get", "watch_set", "watch_scan", "arm_callouts", "ears_arm", "ears_dismiss", "ears_remove", "ears_fix", "ears_mode", "ears_state", "performance", "help", "jason_today", "jason_sweep", "jason_score",
          "push_key", "push_sub", "push_list", "push_remove", "push_test", "layout_get", "layout_set",
          "signals_feed", "signal_img", "signals_cfg", "signals_cfg_set", "signal_chat", "signal_chat_clear", "selftest_now",
-         "playbook_get", "feedback_add", "feedback_list", "daily_now",
+         "playbook_get", "news_get", "feedback_add", "feedback_list", "daily_now",
          "prep_get", "prep_submit", "prep_reply", "prep_watch", "prep_img", "score_extra", "check_cancel", "prep_lock",
          "charts_get", "chart_now", "chart_review", "chart_use", "chart_chat",
          "market_read",                                                                                                   // v4.0
