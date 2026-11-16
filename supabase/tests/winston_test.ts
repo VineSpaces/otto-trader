@@ -1986,3 +1986,65 @@ Deno.test("v5.9.5 news: Winston may READ otto_news (never write it); no row = th
   eq(W.ai.last.user.replace(b, ""), before, "with the block removed the prompt is byte for byte what it was");
   eq(TABLES.winston_trades[0]?.label, "NVDA 200C 10/16", "and the same trade is taken");
 });
+
+/* =========================== v5.9.6: the coach's written answers (13 Nov) — one week, size per trade, Profit 1 =========================== */
+Deno.test("v5.9.6 picker window: with a 5-day minimum a Monday needs more than 10 days to reach a Friday contract", () => {
+  const P = X.pickExpirations, all = ["2026-11-18", "2026-11-20", "2026-11-27", "2026-12-18"];
+  eq(P(all, "2026-11-16", { min_days_to_exp: 5 }), [], "Monday 16 Nov, old 10-day window: this Friday is 4 trading days, next Friday is 11 days out = nothing");
+  eq(P(all, "2026-11-16", { min_days_to_exp: 5, exp_window_days: 14 }), ["2026-11-27"], "14 days: next Friday (Thanksgiving week, 8 trading days)");
+  eq(P(all, "2026-11-16", { min_days_to_exp: 5, exp_window_days: 35 }), ["2026-11-27", "2026-12-18"], "35 days reaches the December monthly");
+  eq(P(all, "2026-11-13", { min_days_to_exp: 5, exp_window_days: 14 }), ["2026-11-20", "2026-11-27"], "Friday 13 Nov: 20 Nov is exactly 5 trading days");
+  eq([X.expWindow({}), X.expWindow({ exp_window_days: 3 }), X.expWindow({ exp_window_days: 99 }), X.expWindow({ exp_window_days: 14 })], [10, 10, 10, 14], "default 10, out of range = 10");
+});
+Deno.test("v5.9.6 fitQty: per-trade sizing buys as many contracts as fit, 1 to paper_contracts; off = the v5.9.3 way", () => {
+  const C = { paper_contracts: 2, size_per_trade: true };
+  eq([X.fitQty(C, 1396, 5000, 6.75), X.fitQty(C, 1396, 5000, 7.75), X.fitQty(C, 1000, 4000, 2.5), X.fitQty(C, 1000, 300, 2.5), X.fitQty(C, 1000, 4000, 12)],
+    [2, 1, 2, 1, 1], "13 Nov NVDA $6.75 → 2; $7.75 → 1; cash-bound → 1; one contract over the cap still 1 (the picker already passed it)");
+  eq([X.fitQty({ paper_contracts: 2 }, 1000, 4000, 9), X.fitQty({ paper_contracts: 3, size_per_trade: true }, 1000, 4000, 2.5)], [2, 3], "off: always paper_contracts; on: never more than paper_contracts");
+});
+Deno.test("v5.9.6 p1Due + withP1: +20% on the premium sells one of two; one contract sells nothing; once only; the dollars add up", () => {
+  const cfg = { p1_pct: 20 };
+  eq(X.p1Due({}, {}, 2.5, 9, 2), { due: false, sell: 0 }, "off by default");
+  eq(X.p1Due(cfg, {}, 2.5, 2.99, 2), { due: false, sell: 0 }, "under +20%");
+  eq(X.p1Due(cfg, {}, 2.5, 3.0, 2), { due: true, sell: 1 }, "at +20% with two: sell one");
+  eq(X.p1Due(cfg, {}, 2.5, 3.0, 1), { due: true, sell: 0 }, "one contract: nothing sold, stop to breakeven");
+  eq(X.p1Due(cfg, { p1: { qty: 1 } }, 2.5, 4, 2), { due: false, sell: 0 }, "once only");
+  const t = { entry_ask: 2.5, entry_mid: 2.45, plan: { planned_loss: 140, p1: { qty: 1, bid: 3.0, mid: 3.05 } } };
+  const m = X.withP1(X.tradeMoney({ entry_ask: 2.5, entry_mid: 2.45, exit_bid: 2.4, exit_mid: 2.45, qty: 1 }, 140), t);
+  eq([m.pnl_realistic, m.pnl_mid, m.spread_cost, m.pnl_double, m.r_multiple], [40, 60, 20, 20, 0.29], "−$10 on the last contract + $50 on the one sold at P1");
+  eq(X.withP1({ pnl_realistic: 5 }, { plan: {} }), { pnl_realistic: 5 }, "no P1 = unchanged");
+});
+Deno.test("v5.9.6 end to end: 2 contracts fit the per-trade cap; at +20% one is sold and the stop goes to breakeven; the last one closes at breakeven; P&L counts both", async () => {
+  seed(); Object.assign(TABLES.winston_settings[0].value, { paper_contracts: 2, size_per_trade: true, p1_pct: 20 });
+  setNow("2026-10-14T14:11:00Z"); await setupCall();
+  await X.tick();
+  const t0 = TABLES.winston_trades[0];
+  eq([t0?.label, t0?.qty, t0?.entry_fill], ["NVDA 200C 10/16", 2, 2.5], "two $250 contracts inside the $1,000 cap");
+  assert(/per TRADE/.test(W.ai.last.user) && /PROFIT 1: at \+20%/.test(W.ai.last.user), "the prompt says how he is sized and about Profit 1");
+  setNow("2026-10-14T14:21:00Z"); W.bars.NVDA.push(barRow("2026-10-14T14:20:00Z", 200.5, 200.8, 200.3, 200.6)); W.opts.opt1.bid = 3.0; W.opts.opt1.ask = 3.1; W.spot.NVDA = 200.6;
+  await X.tick();
+  const t1 = TABLES.winston_trades[0];
+  eq([t1.status, t1.plan.p1?.qty, t1.plan.p1?.bid, t1.plan.wrong_if_level, !!t1.plan.breakeven_at], ["open", 1, 3, 200, true], "P1: one sold at $3.00, stop to the entry 200");
+  assert(t1.flags.includes("stamp:p1") && TABLES.winston_log.some((l) => l.kind === "p1" && l.data.sold === 1), "stamped and logged");
+  setNow("2026-10-14T14:31:00Z"); W.opts.opt1.bid = 2.4; W.opts.opt1.ask = 2.5;
+  await X.tick();
+  const c = TABLES.winston_trades[0];
+  eq([c.status, c.exit_reason], ["closed", "breakeven"], "the last contract is out when the premium is back to what he paid");
+  eq([c.pnl_realistic, c.pnl_mid, c.spread_cost], [40, 60, 20], "−$10 + $50");
+  setNow("2026-10-14T20:20:00Z"); eq((await X.reportJob()).report.balance, 4040, "balance 4000 + 40");
+});
+Deno.test("v5.9.6 the new numbers are settings: set, validated, logged", async () => {
+  seed();
+  const r: any = await X.setEnabled({ p1_pct: 20, size_per_trade: true, exp_window_days: 14 });
+  eq([r.ok, r.p1_pct, r.size_per_trade, r.exp_window_days], [true, 20, true, 14], "set");
+  let threw = 0;
+  for (const b of [{ p1_pct: -1 }, { p1_pct: 101 }, { exp_window_days: 6 }, { exp_window_days: 46 }]) { try { await X.setEnabled(b); } catch { threw++; } }
+  eq(threw, 4, "out of range refused");
+});
+Deno.test("v5.9.6 end to end: when two don't fit the per-trade cap he buys one (not none, not two)", async () => {
+  seed(); Object.assign(TABLES.winston_settings[0].value, { paper_contracts: 2, size_per_trade: true, p1_pct: 20 });
+  setNow("2026-10-14T14:11:00Z"); await setupCall({ bid: 5.9, ask: 6.0 });
+  await X.tick();
+  const t = TABLES.winston_trades[0];
+  eq([t?.label, t?.qty, t?.entry_fill], ["NVDA 200C 10/16", 1, 6], "$600 each, $1,000 cap: one contract");
+});
