@@ -132,9 +132,19 @@ export const CONFIG_DEFAULTS: any = { enabled: true, paper_balance: 4000, own_id
   paper_contracts: 1,   // v5.9.3 (Ifoma, 12 Nov): contracts per PAPER trade, 1-3. Every per-trade limit is per contract, so the trade's cost, planned loss and P&L scale with it. Live size is its own cap (LIVE contracts).
   model: "opus", max_loss_usd: 100, max_loss_pct_premium: 35,   // v5.6: the brain switch; the loss cap per trade (dollars AND share of the premium — the tighter one wins): spread in dollars ≤ 1% of the book; no contract under $1.00; a coach level more than 0.5% behind price is a chase
  
+  late_shadow_on: true, late_shadow_until_min: 900,   // v5.9.7 (Ifoma, 17 Nov): after last_entry_min Winston keeps looking until this minute (900 = 3:00 PM) and books every idea as a SHADOW (never a paper or live trade); off = the old skip
   last_entry_min: 930, default_time_exit_min: 180, flat_min: 950, max_open: 1, mode: "strict", min_time_exit_min: 0, limits_override: {},
   universe: ["SPY", "QQQ", "NVDA", "TSLA", "AAPL", "MSFT", "META", "AMZN", "GOOGL", "AMD", "PLTR", "MU"] };
 export const paperQty = (cfg: any) => Math.min(3, Math.max(1, Math.floor(num(cfg?.paper_contracts)) || 1));   // v5.9.3
+// v5.9.7: the late look. Past the last entry and up to late_shadow_until_min Winston still thinks (only when something changed), but the `time` gate stays hard,
+// so every idea ends as a shadow, never a trade. Off (late_shadow_on false) = the v5.9.6 skip.
+export const lateLook = (cfg: any, min: number): boolean => cfg?.late_shadow_on !== false && min > num(cfg?.last_entry_min) && min <= (num(cfg?.late_shadow_until_min) || 900);
+// v5.9.7: afternoon shadows as their own group (booked after the last entry) next to the morning ones.
+export function lateTally(rows: any[], lastEntry: number) {
+  const mk = (a: any[]) => { const o = { n: 0, wins: 0, losses: 0, time: 0, open: 0, r: 0, est: 0 }; for (const x of a) { o.n++; if (x.status === "win") o.wins++; else if (x.status === "loss") o.losses++; else if (x.status === "time") o.time++; else o.open++; o.r = round2(o.r + num(x.r)); o.est = round2(o.est + num(x.pnl_est)); } return o; };
+  const isLate = (x: any) => num(x.plan?.booked_at_min) > lastEntry;
+  return { late: mk((rows || []).filter(isLate)), morning: mk((rows || []).filter((x) => !isLate(x))) };
+}
 // v5.9.4: the expiration rule (coach, 12 Nov: "he should be taking that trade for next Friday expiration"; Otto Rules: "after Wednesday, not this Friday's contract").
 // Both numbers are settings. It is a PICKER rule, not a block: the next valid expiration is used; if none is inside the 10-day window the idea is passed and shadowed as before.
 export function tradingDaysTo(date: string, exp: string): number {
@@ -1135,7 +1145,8 @@ export async function tryOpen(ctx: Ctx, d: Decision, spot: number, coachCall: bo
     moveDone: biasOk ? null : moveDone(d.side, d.ticker, ctx.quotes?.[d.ticker], evOk ? { ...ruleParams(rules, "W26"), stock_pct: Math.max(8, num(ruleParams(rules, "W26").stock_pct)), index_pct: Math.max(2.5, num(ruleParams(rules, "W26").index_pct)) } : ruleParams(rules, "W26")),   // v5.5 A: no chase line with the day bias; D: 8% / 2.5% with the sentiment
     newsOnly: newsOnlyProblem(d, ctx.quotes?.[d.ticker]),
     trendAgainst: coachCall && v55.levelTrade !== false ? trendGateProblem(d.side, ctx.trends?.[d.ticker], biasOk) : null });
-  const gate = hits.find((h) => !h.soft);
+  const late = lateLook(cfg, min);   // v5.9.7: in the late look cash and max_open are stamped, not blocking, so the shadow still books (the hard `time` gate below decides, and it never opens a trade)
+  const gate = hits.find((h) => !h.soft && !(late && (h.rule === "max_open" || h.rule === "cash")));
   if (gate) { await recordIdea(day, d, "blocked", `${gate.rule}: ${gate.why}`); await bookShadow(day, d, spot, gate.rule, gate.why); return { opened: false, why: gate.rule + ": " + gate.why }; }   // v4.5: the rule ledger
   if (lc.capped) d.wrong_if_level = lc.wrong_if;                                                  // v5.6 LC: from here on the trade lives on the capped wrong-if
   const atrNote = stopVsAtr(wiOrig, spot, ctx.dctx?.[d.ticker]?.atr14);                           // v4.4: stamp only, never blocks (measures the AI's wrong-if)
@@ -1798,7 +1809,7 @@ export async function checkArmed(ctx: Ctx, blackoutFn: () => Promise<string | nu
   if (!ctx.dctx) { try { const cch = await getSetting("daily_ctx"); if (cch?.day === ctx.day && cch.by) dc = cch.by; } catch { /* none */ } }
   for (const a of list) {
     const d: Decision = { ticker: a.ticker, side: a.side, source: a.source, thesis: a.thesis, wrong_if_level: a.wrong_if_level, target_level: a.target_level, time_exit_min: a.time_exit_min, cites: a.cites, rule_ids: a.rule_ids, trigger_level: a.trigger_level };
-    if (ctx.min > num(ctx.cfg.last_entry_min)) { await recordIdea(ctx.day, d, "passed", "Armed idea dropped: past the last-entry time, never triggered"); out.dropped.push(a.ticker); continue; }
+    if (ctx.min > num(ctx.cfg.last_entry_min) && !lateLook(ctx.cfg, ctx.min)) { await recordIdea(ctx.day, d, "passed", "Armed idea dropped: past the last-entry time, never triggered"); out.dropped.push(a.ticker); continue; }
     if (ctx.lim.locked) { await recordIdea(ctx.day, d, "blocked", "Armed idea dropped: " + ctx.lim.locked.why); out.dropped.push(a.ticker); continue; }
     const tb = bars[a.ticker];
     const mode = a.mode || "level", dir = a.side === "call" ? "up" : "down";
@@ -1953,7 +1964,7 @@ export async function tick(opts: { force?: boolean } = {}): Promise<any> {
       await putSetting("tick_state", { day, snap, last_jason_id: Math.max(lastId, ...posts.map((p) => num(p.id)), 0), last_ai_ms: num(st.last_ai_ms) });
       return { ok: true, locked: lim.locked.why, closed: mgd.closed };
     }
-    if (c.min > num(cfg.last_entry_min)) { await putSetting("tick_state", { ...st, day, snap, last_jason_id: Math.max(lastId, ...posts.map((p) => num(p.id)), 0) }); return { ok: true, skipped: "past the last-entry time", closed: mgd.closed }; }
+    if (c.min > num(cfg.last_entry_min) && !lateLook(cfg, c.min)) { await putSetting("tick_state", { ...st, day, snap, last_jason_id: Math.max(lastId, ...posts.map((p) => num(p.id)), 0) }); return { ok: true, skipped: "past the last-entry time", closed: mgd.closed }; }
 
     // 4. snapshot for the AI
     // v4.3 FULL SCAN: every universe name, every look (was the first six), plus the coach's tickers, the movers and the hot names; cap 16.
@@ -2011,7 +2022,7 @@ REPORTED EARNINGS SINCE YESTERDAY'S CLOSE (W25 waits the full 30 minutes on thes
 SPY READ (W23): ${ctx.index ? `last ${ctx.index.last} vs VWAP ${ctx.index.vwap} — ${ctx.index.above_vwap ? "above" : "below"} VWAP, closes ${ctx.index.rising ? "rising" : ctx.index.falling ? "falling" : "mixed"}` : "unavailable"}
 EVENT DAY (D): ${ctx.event?.on ? `TODAY IS AN EVENT DAY — ${ctx.event.why.join("; ")}${ctx.event.dir ? `; sentiment ${ctx.event.dir.replace("_", "-")}: the W26 chase lines relax to 8% single / 2.5% index for ${ctx.event.dir === "risk_off" ? "PUTS" : "CALLS"} only; nothing changes against the sentiment` : "; no sentiment direction yet, nothing relaxes"}. It is not whether it moves, it is how much.` : "not an event day."}
 TRIGGERS (v4.3): if your entry needs a 10-minute CLOSE through a level first (the coach's "above X" / "below X", a reclaim, a break), put it in trigger_level and the code waits for the close — never enter ahead of a trigger you name. ${armed.waiting ? `${armed.waiting} armed idea(s) are already waiting for their trigger. ` : ""}${armed.fired.length ? `Armed and fired this tick: ${armed.fired.join(", ")}. ` : ""}${armed.dropped.length ? `Armed and dropped this tick: ${armed.dropped.join(", ")}. ` : ""}${(ctx.reported || []).length ? `EXPIRED: callouts on ${ctx.reported!.join(", ")} were written before their earnings — re-read those names fresh from today's bars and context only.` : ""}
-Decide now. Act on NEW coach posts (take or pass, with a reason) and on any idea of your own that the chart and brain support.`;
+${lateLook(cfg, c.min) ? `LATE LOOK (v5.9.7): the entry window closed at ${fmtMin(num(cfg.last_entry_min))}. Nothing you decide now is traded: the code books it as a SHADOW (a scored what-if) so we learn what the afternoon would have done. Decide exactly as you would inside the window (same levels, wrong-if and target). Do NOT pass an idea because it is late or because little time is left; pass only what you would pass on the merits.\n` : ""}Decide now. Act on NEW coach posts (take or pass, with a reason) and on any idea of your own that the chart and brain support.`;
     let out: any, usage: AiUsage = { input: 0, output: 0 };
     let aiMeta: any = null, aiModel: string | null = null;   // v5.8: the model that actually answered (a fallback shows as 4.6)
     try { const r = await aiJson(SYSTEM, userDyn, DECIDE_TOOL, 6000, stable); out = r.out; usage = r.usage; aiMeta = r.meta || null; aiModel = r.model || null; } catch (e) { await wlog("ai_error", { msg: String((e as Error).message).slice(0, 200) }); return { ok: false, error: "AI: " + String((e as Error).message).slice(0, 120), closed: mgd.closed }; }
@@ -2244,10 +2255,13 @@ export async function buildReport(day: string, cfg: any) {
   lines.push(`Today: ${dayStats.pnl_realistic >= 0 ? "+" : "-"}$${Math.abs(dayStats.pnl_realistic)} at real fills (ask in, bid out); $${dayStats.pnl_mid} at mid; $${dayStats.pnl_double} if the spread cost were doubled.`);
   const stillOpen = today.filter((t) => t.status === "open").length;
   if (stillOpen) lines.push(`WARNING: ${stillOpen} trade(s) still open at the report. They should have been flat by 3:50 PM.`);
+  let lateRep: any = null;   // v5.9.7: the afternoon's shadows next to the morning's
+  try { lateRep = lateTally((await db(`winston_shadows?day=eq.${day}&select=*&order=id.asc&limit=100`)) || [], num(cfg.last_entry_min)); } catch { /* the ledger is best effort */ }
+  if (lateRep && lateRep.late.n) lines.push(`Afternoon shadows (booked after ${fmtMin(num(cfg.last_entry_min))}, never traded): ${lateRep.late.n}, ${lateRep.late.wins} to target, ${lateRep.late.losses} to the wrong-if, ${lateRep.late.r >= 0 ? "+" : ""}${lateRep.late.r}R, est ${lateRep.late.est >= 0 ? "+" : "-"}$${Math.abs(lateRep.late.est)} on the stock. Morning shadows: ${lateRep.morning.n}, ${lateRep.morning.r >= 0 ? "+" : ""}${lateRep.morning.r}R.`);
   const report = { day, built_at: new Date(nowMs()).toISOString(), summary: lines, taken, passed, day_stats: dayStats, all_time: stats, balance: eqAll.equity, start_balance: row.start_balance ?? cfg.paper_balance,
     ai: row.ai || null, routine_done: !!row.routine, sentiment_done: !!row.sentiment, kill: row.kill || null, coach_posts_seen: ideas.filter((i) => String(i.source).startsWith("coach:")).length,
     passed_by_reason: passedBy, stamp_stats: stampStats, after_exits: { today: afterTally(today), all_time: afterTally(trades) },   // v4.8: was the early exit right?
-    mode: isDataMode(cfg) ? "data" : "strict", scanner: await scanReport(day).catch(() => null), shadow: await shadowState().catch(() => null),   // v4.4 shadow scanner score; v4.5 rule-cost ledger
+    mode: isDataMode(cfg) ? "data" : "strict", scanner: await scanReport(day).catch(() => null), shadow: await shadowState().catch(() => null), late_shadow: lateRep,   // v4.4 shadow scanner score; v4.5 rule-cost ledger; v5.9.7 afternoon vs morning shadows
     balance_note: "balance = paper start + every closed trade since day one (all days), not today's P&L alone" };
   await db("winston_days?on_conflict=day", { method: "POST", headers: { prefer: "resolution=merge-duplicates,return=minimal" }, body: JSON.stringify({ day, report, end_balance: eqAll.equity, updated_at: new Date(nowMs()).toISOString() }) });
   return report;
@@ -2328,8 +2342,10 @@ export async function setEnabled(body: any) {
     await wlog("config", next);
     return { ok: true, ...next, enabled: cfg.enabled };
   }
-  if (body?.p1_pct != null || body?.size_per_trade != null || body?.exp_window_days != null) {   // v5.9.6
+  if (body?.p1_pct != null || body?.size_per_trade != null || body?.exp_window_days != null || body?.late_shadow_on != null || body?.late_shadow_until_min != null) {   // v5.9.6; v5.9.7 the late look
     const next: any = {};
+    if (body?.late_shadow_on != null) next.late_shadow_on = body.late_shadow_on === true || body.late_shadow_on === "true";
+    if (body?.late_shadow_until_min != null) { const n = Math.round(Number(body.late_shadow_until_min)); if (!(n >= 571 && n <= 950)) throw new Error("late_shadow_until_min must be 571 to 950 (900 = 3:00 PM)"); next.late_shadow_until_min = n; }
     if (body?.p1_pct != null) { const n = Math.round(Number(body.p1_pct)); if (!(n >= 0 && n <= 100)) throw new Error("p1_pct must be 0 to 100 (0 = off)"); next.p1_pct = n; }
     if (body?.size_per_trade != null) next.size_per_trade = body.size_per_trade === true || body.size_per_trade === "true";
     if (body?.exp_window_days != null) { const n = Math.round(Number(body.exp_window_days)); if (!(n >= 7 && n <= 45)) throw new Error("exp_window_days must be 7 to 45"); next.exp_window_days = n; }

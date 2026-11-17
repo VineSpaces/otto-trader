@@ -2048,3 +2048,63 @@ Deno.test("v5.9.6 end to end: when two don't fit the per-trade cap he buys one (
   const t = TABLES.winston_trades[0];
   eq([t?.label, t?.qty, t?.entry_fill], ["NVDA 200C 10/16", 1, 6], "$600 each, $1,000 cap: one contract");
 });
+
+/* =========================== v5.9.7: the late look (afternoon shadows) =========================== */
+const lateCfg = (extra: any = {}) => Object.assign(TABLES.winston_settings[0].value, { last_entry_min: 660, ...extra });   // window closes 11:00 ET
+const ownIdea = (extra: any = {}) => ({ ticker: "NVDA", side: "call", source: "own", thesis: "afternoon reclaim", wrong_if_level: 198, target_level: 204, cites: [{ type: "chart" }], ...extra });
+const passCoach1 = { ticker: "NVDA", source: "coach:1", reason: "already decided" };
+Deno.test("v5.9.7 late look: at 11:10 a valid idea books a SHADOW, opens no trade and never reaches the order path; a quiet tick makes no AI call", async () => {
+  seed(); lateCfg(); setNow("2026-10-14T15:10:00Z"); await setupCall();
+  aiScript = () => ({ decisions: [ownIdea()], passes: [passCoach1] });
+  const r: any = await X.tick();
+  eq(TABLES.winston_trades.length, 0, "no paper trade after the window: " + JSON.stringify(r.results));
+  eq(TABLES.winston_shadows.length, 1, "one shadow"); eq([TABLES.winston_shadows[0].ticker, TABLES.winston_shadows[0].side, TABLES.winston_shadows[0].rule], ["NVDA", "call", "time"], "booked on the time rule");
+  eq(TABLES.winston_shadows[0].plan.booked_at_min, 670, "booked at 11:10 so the report can tell it from the morning");
+  eq(W.ai.n, 1, "one AI look");
+  assert(!W.calls.some((c) => /place_|order/i.test(c.tool)), "no order tool touched: " + JSON.stringify(W.calls.map((c) => c.tool)));
+  setNow("2026-10-14T15:20:00Z"); const r2: any = await X.tick();
+  eq(r2.skipped, "nothing changed", "a quiet tick: " + JSON.stringify(r2)); eq(W.ai.n, 1, "no second AI call when nothing changed");
+});
+Deno.test("v5.9.7 late look: the switch off restores the skip; after late_shadow_until_min the skip comes back; armed ideas are dropped as before", async () => {
+  seed(); lateCfg({ late_shadow_on: false }); setNow("2026-10-14T15:10:00Z"); await setupCall();
+  aiScript = () => ({ decisions: [ownIdea()], passes: [passCoach1] });
+  const r: any = await X.tick();
+  eq(r.skipped, "past the last-entry time", "off = today's skip"); eq(W.ai.n, 0, "no AI"); eq(TABLES.winston_shadows.length, 0, "no shadow");
+  seed(); lateCfg({ late_shadow_until_min: 900 }); setNow("2026-10-14T19:01:00Z"); await setupCall();   // 3:01 PM
+  aiScript = () => ({ decisions: [ownIdea()], passes: [passCoach1] });
+  const r2: any = await X.tick();
+  eq(r2.skipped, "past the last-entry time", "after 3:00 PM no more late looks: " + JSON.stringify(r2)); eq(W.ai.n, 0, "no AI");
+  seed(); lateCfg({ late_shadow_on: false }); setNow("2026-10-14T14:11:00Z"); await setupCall();
+  aiScript = () => ({ decisions: [ownIdea({ trigger_level: 201 })], passes: [passCoach1] }); await X.tick();
+  setNow("2026-10-14T15:30:00Z"); aiScript = () => ({ decisions: [], passes: [] }); await X.tick();
+  assert(TABLES.winston_ideas.some((i) => /Armed idea dropped: past the last-entry time/.test(i.reason)), "switch off: the armed idea is dropped as in v5.9.6");
+});
+Deno.test("v5.9.7 late look: an idea armed in the morning that fires at 11:30 books a shadow instead of being dropped", async () => {
+  seed(); lateCfg(); setNow("2026-10-14T14:11:00Z"); await setupCall();
+  aiScript = () => ({ decisions: [ownIdea({ trigger_level: 201 })], passes: [passCoach1] }); await X.tick();
+  eq(TABLES.winston_settings.find((s) => s.key === "armed_ideas")?.value?.length, 1, "armed in the morning");
+  setNow("2026-10-14T15:30:00Z"); W.bars.NVDA.push(barRow("2026-10-14T15:10:00Z", 200.5, 201.8, 200.2, 201.5)); W.spot.NVDA = 201.5; aiScript = () => ({ decisions: [], passes: [] });
+  const r: any = await X.tick();
+  eq(TABLES.winston_trades.length, 0, "fired after the window: no trade: " + JSON.stringify(r.armed));
+  assert(!TABLES.winston_ideas.some((i) => /Armed idea dropped/.test(i.reason)), "not dropped");
+  const sh = TABLES.winston_shadows.find((x) => x.ticker === "NVDA"); eq([sh?.rule, sh?.plan?.booked_at_min], ["time", 690], "booked as a shadow at 11:30");
+});
+Deno.test("v5.9.7 late look: with a position already open the afternoon idea still books (cash and max_open are stamped, the time gate decides)", async () => {
+  seed(); lateCfg(); setNow("2026-10-14T14:11:00Z"); await setupCall(); await X.tick();
+  eq(TABLES.winston_trades.length, 1, "the morning trade is open");
+  W.opts.spy1 = { strike: 600, bid: 4.0, ask: 4.1, delta: .35, vol: 900, oi: 400, exp: "2026-10-16" };
+  W.spot.SPY = 606;   // a +1% move since the last look is what wakes the AI up (nothing changed = no AI call)
+  setNow("2026-10-14T15:10:00Z"); aiScript = () => ({ decisions: [ownIdea({ ticker: "SPY", wrong_if_level: 603, target_level: 612 })], passes: [passCoach1] });
+  await X.tick();
+  eq(TABLES.winston_trades.filter((t) => t.status === "open").length, 1, "still only the morning trade");
+  const sh = TABLES.winston_shadows.find((x) => x.ticker === "SPY"); eq(sh?.rule, "time", "shadowed on time, not max_open: " + JSON.stringify(TABLES.winston_shadows.map((x) => x.rule)));
+});
+Deno.test("v5.9.7 the late look is a setting and the report groups the afternoon", async () => {
+  seed();
+  const r: any = await X.setEnabled({ late_shadow_on: false, late_shadow_until_min: 840 });
+  eq([r.ok, r.late_shadow_on, r.late_shadow_until_min], [true, false, 840], "set");
+  let threw = 0; for (const b of [{ late_shadow_until_min: 500 }, { late_shadow_until_min: 960 }]) { try { await X.setEnabled(b); } catch { threw++; } }
+  eq(threw, 2, "out of range refused");
+  const t = X.lateTally([{ status: "win", r: 1.5, pnl_est: 60, plan: { booked_at_min: 700 } }, { status: "loss", r: -1, pnl_est: -40, plan: { booked_at_min: 720 } }, { status: "time", r: 0.2, pnl_est: 8, plan: { booked_at_min: 575 } }], 660);
+  eq([t.late.n, t.late.wins, t.late.losses, t.late.r, t.late.est, t.morning.n], [2, 1, 1, 0.5, 20, 1], "afternoon vs morning: " + JSON.stringify(t));
+});
