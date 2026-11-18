@@ -2757,6 +2757,18 @@ export async function liveKill(by: string, why: string): Promise<any> {
   await wlog("kill", { what: "KILLED", result: out.errors.length ? "PARTIAL" : "DONE", detail: `by ${by} (${why}) — cancelled ${out.cancelled}, closed ${out.closed}, mode OFF${out.errors.length ? ", errors: " + out.errors.join("; ") : ""}`, ...out });
   return out;
 }
+// v5.9.8: the mode switch on the Winston tab. OFF and DRY are buttons (the safe direction). LIVE is NEVER a button: the Desk has one shared login, so a button could be Josh's thumb.
+// Going LIVE stays Ifoma's own console paste. A switch away from ON is refused while a live order or position exists (KILL sells it first).
+export async function liveModeButton(who: string | null, mode: string): Promise<{ status: number; body: any }> {
+  if (!who) return { status: 401, body: { ok: false, error: "sign in first" } };
+  if (mode !== "off" && mode !== "dry") return { status: 403, body: { ok: false, error: "Going LIVE is not a button. It is Ifoma's own paste, on purpose." } };
+  const cfg = await getConfig();
+  if (liveModeOf(cfg) === "on") {
+    const open: any[] = (await db("winston_trades?status=eq.open&select=plan").catch(() => [])) || [];
+    if (open.some((t: any) => t.plan?.live?.entry_order_id && !t.plan.live.exit_fill && !t.plan.live.stop_filled)) return { status: 409, body: { ok: false, error: "A live order or position is open. Use KILL, it cancels and sells first." } };
+  }
+  return { status: 200, body: await setEnabled({ live_mode: mode }) };
+}
 export async function liveCard() {
   const cfg = await getConfig(), c = marketClock(), mode = liveModeOf(cfg), L = await getLiveLimits(), st = await liveState();
   const pn = await livePnls(c.date);
@@ -2769,7 +2781,11 @@ export async function liveCard() {
   const today = days[c.date] || {};
   const open: any[] = (await db(`winston_trades?status=eq.open&select=plan,qty`).catch(() => [])) || [];
   const heldQty = open.filter((t: any) => t.plan?.live?.filled && !t.plan.live.exit_fill).reduce((s: number, t: any) => s + num(t.qty || 1), 0);
-  return { ok: true, mode, since: cfg.live_since || null, limits: L, clock: { day: c.date, min: c.min },
+  // v5.9.8: the real account, read-only (never an order tool). Null when the mode is off or Robinhood does not answer.
+  let acct: any = null;
+  if (mode !== "off") { try { const pf = await lv("get_portfolio"); const bpRaw = findKey(pf, "buying_power");
+    acct = { value: num(findKey(pf, "total_value")), bp: num(typeof bpRaw === "object" && bpRaw ? (bpRaw as any).buying_power : bpRaw), at: new Date(nowMs()).toISOString() }; } catch { acct = null; } }
+  return { ok: true, mode, since: cfg.live_since || null, limits: L, acct, clock: { day: c.date, min: c.min },
     now: { open_live: pn.openLive, held_qty: heldQty, day_pnl: pn.dayPnl, week_pnl: pn.weekPnl, last_premium: st.last_premium || null, last_label: st.last_label || null },
     pf: st.pf && st.pf.day === c.date ? st.pf : null, blocked: st.blocked || null, recon: st.recon || null, mismatch_today: st.mismatch_day === c.date && st.ack_day !== c.date,
     kill: kill?.at ? kill : null, clean_days: clean, need_days: 5, today: { reviews: num(today.reviews), alerts: num(today.alerts), mismatches: num(today.mismatches) },
@@ -2820,6 +2836,7 @@ export async function handle(req: Request): Promise<Response> {
     if (fn === "live_card") return json(await liveCard());                       // v4.9: the LIVE card on the Winston tab
     if (fn === "kill_links") return json(await killLinks());                     // v4.9: the two phone links (Ifoma, Josh)
     if (fn === "kill_now" && req.method === "POST") return json({ ok: true, ...(await liveKill(deskUser(claims) || "desk", "kill button")) });   // v4.9: the card's hold-to-confirm button
+    if (fn === "live_mode_set" && req.method === "POST") { const b: any = await req.json().catch(() => ({})); const r = await liveModeButton(deskUser(claims), String(b?.mode || "")); return json(r.body, r.status); }   // v5.9.8
     if (fn === "rule_set" && req.method === "POST") return json(await setRule(await req.json().catch(() => ({}))));
     if (fn === "config_set" && req.method === "POST") return json(await setEnabled(await req.json().catch(() => ({}))));
     if (fn === "after_score") {                                                              // v4.8: score (or back-fill) "what happened after the exit" for one past day

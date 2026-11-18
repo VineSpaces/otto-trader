@@ -403,6 +403,9 @@ body.dk-on::before,body.splash-off::before{display:none!important}
 .v55row{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}.v55c{font:700 11.5px var(--mono);padding:3px 9px;border-radius:999px;border:1px solid var(--rule);color:var(--ink-2)}.v55c.s{color:var(--down,#ff5a2e);border-color:#5a2a1a}.v55c.l{color:var(--up);border-color:#1f4a24}.v55c.x{opacity:.55;text-decoration:line-through}.v55c.e{color:#ffc27a;border-color:#5a4a1a}
 .win-chip{font-weight:700;font-size:12px;border-radius:7px;padding:4px 9px;min-width:58px;text-align:center;background:var(--surface-3,#222)}.win-chip.w{background:#0d2a10;color:var(--up)}.win-chip.l{background:#2e150c;color:var(--down,#ff5a2e)}.win-chip.o{background:#2a230c;color:#ffc27a}
 /* v3.38 (approved mockup v338-mockup.html): mode badge, stamps, MFE/MAE, gate + exit bars; the Pop Quiz tab */
+.lc-bal{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:2px 0 8px}.lc-bal>div{background:var(--bg-2,#10141b);border:1px solid var(--rule);border-radius:10px;padding:10px 12px}.lc-bal small{display:block;color:var(--ink-3);font-size:11px;letter-spacing:.06em;text-transform:uppercase}.lc-bal b{font-size:19px}
+.lc-mode{margin-top:14px;display:flex;align-items:center;gap:12px;flex-wrap:wrap;border-top:1px solid var(--rule);padding-top:12px}.lc-mseg{display:inline-flex;border:1px solid var(--rule);border-radius:10px;overflow:hidden}.lc-mseg button{background:transparent;color:var(--ink-2);border:0;border-right:1px solid var(--rule);padding:9px 16px;font:600 13px var(--body);cursor:pointer}.lc-mseg button:last-child{border-right:0}.lc-mseg button.sel{background:#2a1f08;color:var(--gold,#F5C451)}.lc-mseg button.sel.liveb{background:var(--up);color:#0d0f12}.lc-mseg button[disabled]{cursor:not-allowed;opacity:.75}
+@media(max-width:700px){.lc-bal{grid-template-columns:repeat(2,1fr)}}
 .win-mode{font-family:var(--mono);font-size:11px;padding:3px 8px;border-radius:6px;border:1px solid var(--rule);color:var(--ink-2)}.win-mode.data{color:#ffb547;border-color:#7a5212;background:#2a1f08}
 .win-stamps{display:flex;gap:6px;flex-wrap:wrap;margin-top:6px}.win-st{font-family:var(--mono);font-size:11px;padding:2px 7px;border-radius:6px;border:1px solid #5a4a15;background:#2a2410;color:#f0d890;cursor:help}.win-st.fact{border-color:#6a2a12;background:#2e140a;color:#ffb39a}
 .win-exc{font-family:var(--mono);font-size:11.5px;color:var(--ink-2);margin-top:4px}.win-exc b{color:var(--ink)}
@@ -2767,7 +2770,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.9.5";
+const BUILD="5.9.8";
 // v5.7.1 (9 Nov): the brain has three settings — label + the next one in the cycle. Server: winApi("config_set",{model}) accepts opus | sonnet55 | sonnet.
 const WIN_BRAIN={opus:"Opus 5.5",sonnet55:"Sonnet 5.5",sonnet:"Sonnet 4.6"},WIN_BRAIN_NEXT={opus:"sonnet55",sonnet55:"sonnet",sonnet:"opus"};
 function winBrainLabel(m){return WIN_BRAIN[m]||WIN_BRAIN.opus}
@@ -4703,10 +4706,13 @@ function winLive(c){
   const say=m==="off"?`<b>What this means:</b> Winston cannot touch the real account at all — every order tool is blocked for him. Paper trading continues as usual.`
     :m==="dry"?`<b>What this means:</b> every trade he takes on paper also gets written up as the exact real ticket and shown to Robinhood for a yes/no — without placing it. Five clean days here, plus the gate, is what earns the switch to ON. That switch is two human acts: your "ship it" and your own paste.`
     :`<b>What this means:</b> Winston is trading the real account. The caps are enforced on the server before any order is sent — not on this page. If anything looks wrong, the kill button is the one thing to press.`;
+  const A=c.acct,usd=v=>"$"+(+v).toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+  const balHtml=(m==="off"||!A)?"":`<div class="lc-bal"><div><small>Real account value</small><b>${usd(A.value)}</b></div><div><small>Buying power</small><b>${usd(A.bp)}</b></div><div><small>Real P&amp;L today</small>${money(n.day_pnl)}</div><div><small>Real P&amp;L this week</small>${money(n.week_pnl)}</div></div><div class="mut" style="font-size:12.5px;margin-bottom:6px">Cushion above the $${+(c.limits||{}).min_bp||600} floor (live stops for good below it): <b>${usd(Math.max(0,A.bp-(+(c.limits||{}).min_bp||600)))}</b></div>`;
+  const modeSw=`<div class="lc-mode"><span class="mut">Mode</span><div class="lc-mseg"><button data-m="off" class="${m==="off"?"sel":""}">OFF</button><button data-m="dry" class="${m==="dry"?"sel":""}">DRY · paper only</button><button disabled title="Going live is Ifoma's own paste, on purpose" class="${m==="on"?"sel liveb":""}">LIVE · real money</button></div><span class="mut" style="font-size:12.5px">Paper keeps running in every mode. LIVE is switched on by a paste from Ifoma, never a button.</span></div>`;
   const killRow=m==="off"&&!k?"":`<div class="lc-kill"><button class="lc-kbtn" id="lcKill">⏻ KILL WINSTON</button><span class="mut" style="font-size:12.5px">Cancels every open order, sells every position at market, flips live mode OFF. Same action as the phone bookmark (you and Josh each have the link). ${m==="dry"?"In dry there is nothing live to sell — it flips the mode OFF.":""}</span></div>`;
   return `<div class="lc ${m}"><div class="lc-h"><span class="lc-big">LIVE · ••7012</span><span class="lc-pill ${pillCls}">${pillTxt}</span><span class="mut" style="font-size:13px">${sub}</span></div>
-    <div class="lc-grid"><div class="lc-box"><h4>This morning's preflight · 8:45 AM</h4><div class="lc-pf">${pfHtml}</div>${recHtml}</div><div class="lc-box"><h4>Hard caps (real money only)</h4><div class="lc-caps">${capsHtml}</div></div></div>
-    <div class="lc-led">${ledHtml}</div>${killRow}<div class="lc-say">${say}</div></div>`;
+    ${balHtml}<div class="lc-grid"><div class="lc-box"><h4>This morning's preflight · 8:45 AM</h4><div class="lc-pf">${pfHtml}</div>${recHtml}</div><div class="lc-box"><h4>Hard caps (real money only)</h4><div class="lc-caps">${capsHtml}</div></div></div>
+    <div class="lc-led">${ledHtml}</div>${modeSw}${killRow}<div class="lc-say">${say}</div></div>`;
 }
 function winMin(m){m=+m||0;const h=Math.floor(m/60),mm=m%60;return `${((h+11)%12)+1}:${String(mm).padStart(2,"0")} ${h<12?"AM":"PM"}`}
 function winKillAsk(c){
@@ -4897,6 +4903,9 @@ async function dkWinston(keep){
   pg.innerHTML=`<div class="dkp win43">${winToday(j)}</div>`;pg.scrollTop=keep?sy:0;   // v4.3: one screen; Report / Scorecard / rules / how / trade cards are popups
   pg.querySelectorAll("[data-wpop]").forEach(b=>b.onclick=e=>{e.stopPropagation();winPop(b.dataset.wpop,b.dataset.wid)});
   const lk=$("#lcKill");if(lk)lk.onclick=e=>{e.stopPropagation();winKillAsk(WIN.lc)};
+  pg.querySelectorAll(".lc-mseg button[data-m]").forEach(b=>b.onclick=async e=>{e.stopPropagation();const mm=b.dataset.m;if(WIN.lc&&WIN.lc.mode===mm)return;
+    try{const r=await winApi("live_mode_set",{mode:mm});toast("Winston mode is now "+String(r.live_mode||mm).toUpperCase())}catch(err){toast(String(err.message||err).slice(0,120))}
+    if(DK.view==="winston")dkWinston(true)});   // v5.9.8: OFF / DRY only; LIVE is a paste
   const pp=$("#winPrep");if(pp)pp.onclick=()=>winPrepSet(!winPrepActive(j));
   const pz=$("#winPause");if(pz)pz.onclick=async()=>{if(WIN.busy)return;WIN.busy=true;pz.disabled=true;
     try{await winApi("config_set",{enabled:!(j.config&&j.config.enabled)})}catch(e){alert("Could not change it: "+e.message)}
@@ -7158,8 +7167,8 @@ function v4TopDraw(){
   const who=$("#dkWho"),slot=$("#v4whoSlot"),home=$(".dk-head .dk-who");if(who&&slot&&home){if(wide&&who.parentElement!==slot)slot.appendChild(who);else if(!wide&&who.parentElement!==home)home.appendChild(who)}
   const p=DK.panel||{},c=p.conn||{},bad=(c.tv===false&&!!p.quotes_error)||(c.rh===false&&!!p.rh_error)||!!(V4.mr&&V4.mr.error);
   const dot=(el,ok,err,lab)=>{if(!el)return;el.innerHTML=`<i class="${err?"bad":ok?"":"off"}"></i>${lab}`};
-  const tvq=p.tv_quota_until&&p.tv_quota_until>Date.now();dot($("#v4tv"),c.tv&&!tvq,p.quotes_error||tvq,`TradingView${p.tv_calls!=null?` · ${p.tv_calls}`:""}${tvq?" · quota — back 8 PM":""}`);
-  const tvEl=$("#v4tv");if(tvEl)tvEl.title=tvq?"TradingView's daily tool-call quota is used up; alerts and the watchlist are saved copies until midnight UTC (8 PM ET). Prices come from Yahoo and Robinhood.":`TradingView tool calls today: ${p.tv_calls==null?"—":p.tv_calls} (alerts and watchlist are shared copies, refreshed every 10 min)`;dot($("#v4rh"),c.rh,p.rh_error,"Robinhood");
+  const tvq=p.tv_quota_until&&p.tv_quota_until>Date.now();dot($("#v4tv"),c.tv&&!tvq,p.quotes_error||tvq,`TradingView${p.tv_calls!=null?` · ${p.tv_calls}`:""}${tvq?" · quota — back "+new Date(p.tv_quota_until).toLocaleTimeString("en-US",{timeZone:"America/New_York",hour:"numeric",minute:"2-digit"}):""}`);
+  const tvEl=$("#v4tv");if(tvEl)tvEl.title=tvq?"TradingView's daily tool-call quota is used up; alerts and the watchlist are saved copies until the quota resets (midnight UTC = 7 PM ET in winter). Prices come from Yahoo and Robinhood.":`TradingView tool calls today: ${p.tv_calls==null?"—":p.tv_calls} (alerts and watchlist are shared copies, refreshed every 10 min)`;dot($("#v4rh"),c.rh,p.rh_error,"Robinhood");
   const W=DK.watch,won=W&&W.clock==="open",wn=W?(W.rows||[]).filter(r=>r.status==="watching").length:0;dot($("#v4w"),won,W&&W.error,`Levels${W?(won?` · ${wn}`:W.clock==="pre"?" · from 9:30":" · off"):""}`);
   const apE=$("#v4ap");if(apE){const s9=AP.s;apE.classList.toggle("apon",!!(s9&&s9.on));apE.innerHTML=`<i class="${s9&&s9.on?"":"off"}"></i>OttoPilot${s9?(s9.on?` · ON · ${s9.trades.length}/${s9.cfg.max_trades}`:" · off"):""}`}   // v5.9
   const ck0=$("#v4clock");if(ck0)ck0.title=`v${BUILD}`;

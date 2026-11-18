@@ -347,3 +347,36 @@ Deno.test("v4.9 static: every place_/cancel_ call in the live block sits behind 
   assert(!/place_option_order|cancel_option_order/.test(fn("livePreflight")) && !/place_option_order|cancel_option_order/.test(fn("liveCard")), "preflight and the card never order");
   assert(!/place_equity_order|cancel_equity_order|review_equity_order/.test(blk), "no equity orders anywhere");
 });
+
+// ---- v5.9.8: real balance on the card, the OFF/DRY button (never LIVE), TradingView cooldown ----
+Deno.test("v5.9.8 live_card carries the real account (read-only); off mode does not ask Robinhood", async () => {
+  seed({ live_mode: "dry" }); PORTFOLIO = { data: { total_value: "1002.05", buying_power: { buying_power: "1002.0500" } } };
+  CALLS.length = 0; const c = await X.liveCard();
+  assert(c.acct && c.acct.value === 1002.05 && c.acct.bp === 1002.05, "account value and buying power: " + JSON.stringify(c.acct));
+  assert(CALLS.every((x: any) => x.tool === "get_portfolio" || !/place_|cancel_/.test(x.tool)), "no order tool touched");
+  seed({ live_mode: "off" }); CALLS.length = 0; const o = await X.liveCard();
+  assert(o.acct === null && CALLS.length === 0, "off: no Robinhood call");
+  PORTFOLIO = { data: { buying_power: { buying_power: "5012.00" } } };
+});
+Deno.test("v5.9.8 mode button: OFF and DRY work, LIVE is refused, signed-out is refused", async () => {
+  seed({ live_mode: "dry" });
+  let r = await X.liveModeButton("ottotrader@vinecreativestudio.com", "on"); assert(r.status === 403, "LIVE refused: " + r.status);
+  assert(TABLES.winston_settings.find((s: any) => s.key === "config").value.live_mode === "dry", "mode unchanged after a refused LIVE");
+  r = await X.liveModeButton(null, "off"); assert(r.status === 401, "signed out refused");
+  r = await X.liveModeButton("ottotrader@vinecreativestudio.com", "off"); assert(r.status === 200 && TABLES.winston_settings.find((s: any) => s.key === "config").value.live_mode === "off", "OFF works");
+  r = await X.liveModeButton("ottotrader@vinecreativestudio.com", "dry"); assert(r.status === 200 && TABLES.winston_settings.find((s: any) => s.key === "config").value.live_mode === "dry", "DRY works");
+});
+Deno.test("v5.9.8 mode button: refuses to leave LIVE while a live order or position exists", async () => {
+  seed({ live_mode: "on" });
+  TABLES.winston_trades.push({ id: 1, status: "open", ticker: "SPY", plan: { live: { entry_order_id: "E1", filled: true } } });
+  let r = await X.liveModeButton("ottotrader@vinecreativestudio.com", "dry"); assert(r.status === 409, "refused while open: " + r.status);
+  assert(TABLES.winston_settings.find((s: any) => s.key === "config").value.live_mode === "on", "still ON");
+  TABLES.winston_trades[0].status = "closed";
+  r = await X.liveModeButton("ottotrader@vinecreativestudio.com", "dry"); assert(r.status === 200, "allowed once flat");
+});
+Deno.test("v5.9.8 source guards: the button route cannot turn LIVE on; the card never orders", async () => {
+  const src = await Deno.readTextFile(new URL("../winston.ts", import.meta.url));
+  const f = src.slice(src.indexOf("export async function liveModeButton"), src.indexOf("export async function liveCard"));
+  assert(/mode !== "off" && mode !== "dry"/.test(f) && !/live_mode: "on"/.test(f), "only off/dry reach setEnabled");
+  assert(!/place_option_order|cancel_option_order/.test(src.slice(src.indexOf("export async function liveCard"), src.indexOf("export async function killLinks"))), "card has no order tools");
+});

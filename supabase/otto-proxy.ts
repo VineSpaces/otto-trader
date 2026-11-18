@@ -2133,9 +2133,9 @@ function tvBudget<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
   // (breaker open), its later "TradingView timed out" had no handler — an unhandled rejection —
   // and Supabase shut the whole worker down ("event loop error"), killing every Desk/Signal run on it.
   p.catch(() => {});
-  if (tvSlow()) return Promise.reject(new Error(TV_SLOW_UNTIL > Date.now() + 10 * 60_000 ? "TradingView daily quota used up — saved copies until 8 PM ET" : "TradingView is slow right now — using backups for a couple of minutes"));
+  if (tvSlow()) return Promise.reject(new Error(TV_SLOW_UNTIL > Date.now() + 10 * 60_000 ? "TradingView daily quota used up — saved copies until " + new Date(TV_SLOW_UNTIL).toLocaleTimeString("en-US", { timeZone: "America/New_York", hour: "numeric", minute: "2-digit" }) + " ET" : "TradingView is slow right now — using backups for a couple of minutes"));
   return withTimeout(p, ms, label).catch((e) => {
-    if (/QUOTA_EXCEEDED|quota exceeded/i.test(String(e?.message))) { TV_SLOW_UNTIL = nextUtcMidnight(); putSetting("tv_slow_until", TV_SLOW_UNTIL).catch(() => {}); }   // v4.2: daily quota — stop asking until the reset
+    if (/QUOTA_EXCEEDED|quota exceeded/i.test(String(e?.message))) { const mm = /in\s+(\d+)\s*min/i.exec(String(e?.message)); TV_SLOW_UNTIL = mm ? Date.now() + (Number(mm[1]) + 1) * 60_000 : nextUtcMidnight(); putSetting("tv_slow_until", TV_SLOW_UNTIL).catch(() => {}); }   // v4.2: daily quota — stop asking until the reset
     else if (/slow right now|timed out|HTTP 429|429|rate.?limit|bad handshake|unreachable/i.test(String(e?.message))) { TV_SLOW_UNTIL = Date.now() + 120_000; putSetting("tv_slow_until", TV_SLOW_UNTIL).catch(() => {}); }
     throw e;
   });
