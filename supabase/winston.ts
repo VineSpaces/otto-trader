@@ -2472,7 +2472,37 @@ export function liveCapRefusal(L: ReturnType<typeof liveLimitsOf>, s: LiveSnap):
 export const liveBuyArgs = (optionId: string, ask: number, qty = 1) => ({ legs: [{ option_id: optionId, side: "buy", position_effect: "open" }], quantity: String(qty), price: ask.toFixed(2), type: "limit", time_in_force: "gfd" });
 export const liveSellLimitArgs = (optionId: string, bid: number, qty = 1) => ({ legs: [{ option_id: optionId, side: "sell", position_effect: "close" }], quantity: String(qty), price: bid.toFixed(2), type: "limit", time_in_force: "gfd" });
 export const liveSellMarketArgs = (optionId: string, qty = 1) => ({ legs: [{ option_id: optionId, side: "sell", position_effect: "close" }], quantity: String(qty), type: "market", time_in_force: "gfd" });
-export const liveStopArgs = (optionId: string, stop: number, qty = 1) => ({ legs: [{ option_id: optionId, side: "sell", position_effect: "close" }], quantity: String(qty), type: "stop_market", stop_price: stop.toFixed(2), time_in_force: "gfd", market_hours: "regular_hours" });
+// v5.9.9 (18 Nov, first live day): the COIN 110P stop at $3.74 was refused by Robinhood ("Stop price does not satisfy the min tick value") and the
+// live trade ran with no stop. Same rule Otto learned on 8 Oct (v3.20): $0.01 under $3, $0.05 from $3 up; non-penny names $0.05 / $0.10 (coarse).
+// Stops round UP, toward the entry, so the loss at the stop never grows.
+export function optTick(price: number, coarse = false) { return price >= 3 ? (coarse ? 0.10 : 0.05) : (coarse ? 0.05 : 0.01); }
+export function roundStopUp(price: number, coarse = false) {
+  const t = optTick(price, coarse);
+  let r = Math.round(Math.ceil(price / t - 1e-9) * t * 100) / 100;
+  if (r >= 3 && price < 3) r = Math.round(Math.ceil(price / optTick(3, coarse) - 1e-9) * optTick(3, coarse) * 100) / 100;
+  return r;
+}
+export const liveStopArgs = (optionId: string, stop: number, qty = 1, coarse = false) => ({ legs: [{ option_id: optionId, side: "sell", position_effect: "close" }], quantity: String(qty), type: "stop_market", stop_price: roundStopUp(stop, coarse).toFixed(2), time_in_force: "gfd", market_hours: "regular_hours" });
+export const LIVE_STOP_TRIES = 2;   // v5.9.9 (Ifoma, 18 Nov): no broker stop after 2 tries -> sell right away
+// One stop attempt: the fine step, then once on the coarse step if Robinhood says "min tick". Records the try on nl.
+export async function placeLiveStop(t: any, nl: any, stop: number, qty: number): Promise<boolean> {
+  nl.stop_tries = (num(nl.stop_tries) || 0) + 1;
+  for (const coarse of [false, true]) {
+    const args = liveStopArgs(t.option_id, stop, qty, coarse);
+    try {
+      const r = await lv("place_option_order", { ...args, ref_id: crypto.randomUUID() });
+      nl.stop_order_id = liveOrderId(r); nl.stop_price = Number(args.stop_price); delete nl.stop_error;
+      await llog("live_order", `${t.ticker} · broker stop @ $${args.stop_price}`, "WORKING", `order ${String(nl.stop_order_id || "?").slice(0, 8)}`, { trade: t.id });
+      return true;
+    } catch (e) {
+      nl.stop_error = String((e as Error).message).slice(0, 160);
+      if (!coarse && /min tick/i.test(nl.stop_error)) continue;
+      break;
+    }
+  }
+  await llog("live_order", `${t.ticker} · broker stop (try ${nl.stop_tries} of ${LIVE_STOP_TRIES})`, "ERROR", nl.stop_error || "no order id", { trade: t.id });
+  return false;
+}
 export const liveOrderId = (j: any): string | null => { const v = j?.data?.order?.id || j?.data?.id || j?.order?.id || j?.id || null; return v ? String(v) : null; };
 export function orderFill(o: any): number | null {      // the price actually paid/received; null until there is one
   const ex: any[] = o?.legs?.[0]?.executions || o?.executions || [];
@@ -2499,7 +2529,7 @@ export function reconcileDiff(mode: string, positions: any[], orders: any[], tra
   const longs = (positions || []).filter((p: any) => p?.type === "long" && num(p.quantity) > 0);
   const live = (trades || []).filter((t: any) => t?.plan?.live?.filled && !t.plan.live.exit_fill && !t.plan.live.stop_filled);
   const expect: Record<string, number> = {};
-  if (mode === "on") for (const t of live) expect[String(t.option_id)] = (expect[String(t.option_id)] || 0) + num(t.qty || 1);
+  if (mode === "on") for (const t of live) expect[String(t.option_id)] = (expect[String(t.option_id)] || 0) + (num(t.plan.live.ticket?.qty) || 1);   // v5.9.9: the LIVE size (paper may hold 2, live holds 1)
   for (const p of longs) {
     const id = String(p.option_id), q = Math.floor(num(p.quantity)), e = expect[id] || 0;
     if (e === 0) out.push({ kind: "unknown_position", detail: `${p.chain_symbol || id} x${q} is on ••7012 and not in Winston's books` });
@@ -2597,7 +2627,7 @@ export async function liveAfterOpen(ctx: Ctx, tradeId: number, d: Decision, row:
   await liveDayBump(ctx.day, (x) => { x.mode = mode; x.reviews++; if (!rv.ok) x.review_fail++; x.alerts += rv.alerts; });
   await llog("live_review", `${label} · buy ${L.contracts} @ $${ef.ask.toFixed(2)} limit`, rv.ok ? "REVIEWED" : "REVIEW FAILED", rv.ok ? `Robinhood: ok${rv.alerts ? ", " + rv.alerts + " alert(s)" : ", no alerts"}` : String(rv.error || ""), { trade: tradeId, kind: "entry" });
   const stop = num(plan.stop_option);
-  if (stop > 0 && stop < ef.ask) {
+  if (stop > 0 && roundStopUp(stop, true) < ef.ask) {   // v5.9.9: must still be below the ask after rounding to Robinhood's step
     const sv = await liveReview(liveStopArgs(row.id, stop, L.contracts));
     live.stop_review = sv;
     await liveDayBump(ctx.day, (x) => { x.reviews++; if (!sv.ok) x.review_fail++; x.alerts += sv.alerts; });
@@ -2663,7 +2693,7 @@ export async function liveSync(cfg: any, day: string, min: number): Promise<any>
   const nowIso = () => new Date(nowMs()).toISOString();
   if (mode === "on") for (const t of trades) {
     const l = t.plan?.live; if (!l || !l.entry_order_id) continue;
-    const nl: any = { ...l }; let ch = false;
+    const nl: any = { ...l }; let ch = false, triedStop = false;
     const qty = num(l.ticket?.qty) || 1;
     if (!nl.filled && !nl.entry_state) {
       const o = byId(nl.entry_order_id);
@@ -2671,10 +2701,8 @@ export async function liveSync(cfg: any, day: string, min: number): Promise<any>
         nl.filled = true; nl.fill = orderFill(o) ?? num(l.ticket?.ask); ch = true;
         await llog("live_order", `${t.ticker} ${t.label || ""} · BUY ${qty}`, "FILLED", `$${num(nl.fill).toFixed(2)} (paper said $${num(t.entry_fill).toFixed(2)})`, { trade: t.id });
         const stop = num(t.plan?.stop_option);
-        if (t.status === "open" && stop > 0 && stop < num(nl.fill)) {
-          try { const r = await lv("place_option_order", { ...liveStopArgs(t.option_id, stop, qty), ref_id: crypto.randomUUID() }); nl.stop_order_id = liveOrderId(r); await llog("live_order", `${t.ticker} · broker stop @ $${stop.toFixed(2)}`, "WORKING", `order ${String(nl.stop_order_id || "?").slice(0, 8)}`, { trade: t.id }); }
-          catch (e) { nl.stop_error = String((e as Error).message).slice(0, 160); await llog("live_order", `${t.ticker} · broker stop`, "ERROR", nl.stop_error, { trade: t.id }); }
-        }
+        if (t.status === "open" && stop > 0 && roundStopUp(stop, true) < num(nl.fill)) { triedStop = true; await placeLiveStop(t, nl, stop, qty); }
+        else if (t.status === "open") { nl.stop_tries = LIVE_STOP_TRIES; nl.stop_error = `stop $${stop.toFixed(2)} is not below the fill $${num(nl.fill).toFixed(2)}`; }
       } else if (o && ["cancelled", "canceled", "rejected", "failed"].includes(String(o.state))) { nl.entry_state = String(o.state); ch = true; await llog("live_order", `${t.ticker} · BUY ${qty}`, String(o.state).toUpperCase(), "no live position", { trade: t.id }); }
       else if (nowMs() - Date.parse(nl.placed_at || nowIso()) > 180e3) { try { await lv("cancel_option_order", { order_id: nl.entry_order_id }); } catch { /* */ } nl.entry_state = "cancelled_timeout"; ch = true; await llog("live_order", `${t.ticker} · BUY ${qty}`, "CANCELLED", "not filled in 3 minutes", { trade: t.id }); }
     }
@@ -2690,7 +2718,18 @@ export async function liveSync(cfg: any, day: string, min: number): Promise<any>
         } catch (e) { nl.error = String((e as Error).message).slice(0, 160); ch = true; }
       }
     }
+    // v5.9.9: a filled, open live trade with no broker stop: try again; after LIVE_STOP_TRIES, close it (paper + live) right away.
+    let sellNow = false;
+    if (t.status === "open" && nl.filled && !nl.exit_fill && !nl.stop_filled && !nl.stop_order_id && !nl.exit_order_id) {
+      const stop = num(t.plan?.stop_option);
+      if (!triedStop && (num(nl.stop_tries) || 0) < LIVE_STOP_TRIES && stop > 0 && roundStopUp(stop, true) < num(nl.fill)) { ch = true; await placeLiveStop(t, nl, stop, qty); }
+      if (!nl.stop_order_id && (num(nl.stop_tries) || 0) >= LIVE_STOP_TRIES) { sellNow = true; ch = true; nl.no_stop_exit = true; }
+    }
     if (ch) { t.plan = { ...t.plan, live: nl }; await patchPlan(t.id, t.plan); }
+    if (sellNow) {
+      await llog("live_order", `${t.ticker} ${t.label || ""} · no broker stop after ${LIVE_STOP_TRIES} tries`, "SELLING", "a real trade never runs without a stop: closing now", { trade: t.id });
+      try { const c = await closeTrade(t, "no_broker_stop", ["live_no_stop"]); Object.assign(t, c); } catch (e) { await wlog("live_error", { where: "no_stop_exit", msg: String((e as Error).message).slice(0, 160) }); }
+    }
   }
   const mm = reconcileDiff(mode, positions, orders, trades);
   const prev = await liveState();
@@ -2759,6 +2798,22 @@ export async function liveKill(by: string, why: string): Promise<any> {
 }
 // v5.9.8: the mode switch on the Winston tab. OFF and DRY are buttons (the safe direction). LIVE is NEVER a button: the Desk has one shared login, so a button could be Josh's thumb.
 // Going LIVE stays Ifoma's own console paste. A switch away from ON is refused while a live order or position exists (KILL sells it first).
+// v5.9.9 (Ifoma, 18 Nov): the Close button lives on the Winston page only (not Josh's Desk). It closes through Winston, so the paper
+// trade and the live contract close together and the books stay right (the stop is cancelled, then the live contract is sold).
+// v5.9.9: option ids of Winston's open REAL trades (a live contract not yet sold or stopped). The Desk shows them with no Close Now.
+export async function liveOptionIds(): Promise<string[]> {
+  const rows: any[] = (await db("winston_trades?status=eq.open&select=option_id,plan")) || [];
+  return rows.filter((t) => t?.plan?.live?.entry_order_id && !t.plan.live.exit_fill && !t.plan.live.stop_filled).map((t) => String(t.option_id));
+}
+export async function closeByHand(who: string | null, id: number): Promise<{ status: number; body: any }> {
+  if (!who) return { status: 401, body: { ok: false, error: "sign in first" } };
+  if (!(id > 0)) return { status: 400, body: { ok: false, error: "which trade?" } };
+  const rows: any[] = (await db(`winston_trades?id=eq.${id}&status=eq.open&select=*`)) || [];
+  if (!rows.length) return { status: 404, body: { ok: false, error: "That trade is not open." } };
+  const c = await closeTrade(rows[0], "closed_by_hand", ["hand:" + who.split("@")[0]]);
+  await wlog("close_by_hand", { id, who });
+  return { status: 200, body: { ok: true, id, exit_fill: c.exit_fill, pnl: c.pnl_realistic, live: !!rows[0].plan?.live?.entry_order_id } };
+}
 export async function liveModeButton(who: string | null, mode: string): Promise<{ status: number; body: any }> {
   if (!who) return { status: 401, body: { ok: false, error: "sign in first" } };
   if (mode !== "off" && mode !== "dry") return { status: 403, body: { ok: false, error: "Going LIVE is not a button. It is Ifoma's own paste, on purpose." } };
@@ -2836,6 +2891,8 @@ export async function handle(req: Request): Promise<Response> {
     if (fn === "live_card") return json(await liveCard());                       // v4.9: the LIVE card on the Winston tab
     if (fn === "kill_links") return json(await killLinks());                     // v4.9: the two phone links (Ifoma, Josh)
     if (fn === "kill_now" && req.method === "POST") return json({ ok: true, ...(await liveKill(deskUser(claims) || "desk", "kill button")) });   // v4.9: the card's hold-to-confirm button
+    if (fn === "live_ids") return json({ ok: true, ids: await liveOptionIds() });   // v5.9.9: the Desk hides Close Now on these
+    if (fn === "close_trade" && req.method === "POST") { const b: any = await req.json().catch(() => ({})); const r = await closeByHand(deskUser(claims), Number(b?.id)); return json(r.body, r.status); }   // v5.9.9
     if (fn === "live_mode_set" && req.method === "POST") { const b: any = await req.json().catch(() => ({})); const r = await liveModeButton(deskUser(claims), String(b?.mode || "")); return json(r.body, r.status); }   // v5.9.8
     if (fn === "rule_set" && req.method === "POST") return json(await setRule(await req.json().catch(() => ({}))));
     if (fn === "config_set" && req.method === "POST") return json(await setEnabled(await req.json().catch(() => ({}))));

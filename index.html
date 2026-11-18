@@ -424,6 +424,11 @@ body.dk-on::before,body.splash-off::before{display:none!important}
 .win-lad .mk{position:absolute;top:0;transform:translateX(-50%);text-align:center;font-size:11px;color:var(--ink-3);white-space:nowrap}.win-lad .mk i{display:block;width:2px;height:30px;margin:2px auto 0;background:var(--ink-3)}.win-lad .mk[style*="transform:none"] i{margin-left:0}.win-lad .mk[style*="-100%"] i{margin-right:0}
 .win-lad .mk.now{color:var(--ink);font-weight:700}.win-lad .mk.now i{background:#fff;width:3px}
 .win-say{margin-top:12px;padding-top:10px;border-top:1px solid #1d3a21;font-size:14px}
+/* v5.9.9 Close this trade (Winston page only) */
+.win-cx{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}.win-cx .mut{font-size:12.5px}
+.wcx-b{border:2px solid #ff5a1f;background:transparent;color:#ff7a45;border-radius:10px;padding:10px 18px;font-weight:800;font-size:15px;cursor:pointer}
+.wcx-yes{background:#ff5a1f;color:#fff;border:0;border-radius:10px;padding:10px 18px;font-weight:800;font-size:15px;cursor:pointer}.wcx-no{background:#1f2937;color:#e6e6e6;border:0;border-radius:10px;padding:10px 18px;font-size:15px;cursor:pointer}
+.tr-win{font-size:11px;border:1px solid var(--gold);color:var(--gold);border-radius:6px;padding:1px 6px;margin-right:4px}
 .win-chart{background:var(--s1);border:1px solid var(--rule);border-radius:12px;padding:10px;margin-top:12px}
 /* v3.33 Close Now (approved mockup close-now-mockup, Option B) */
 .tr-card{border-color:#1d5a22!important;background:#0c1d0e!important}
@@ -2770,7 +2775,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.9.8";
+const BUILD="5.9.9";
 // v5.7.1 (9 Nov): the brain has three settings — label + the next one in the cycle. Server: winApi("config_set",{model}) accepts opus | sonnet55 | sonnet.
 const WIN_BRAIN={opus:"Opus 5.5",sonnet55:"Sonnet 5.5",sonnet:"Sonnet 4.6"},WIN_BRAIN_NEXT={opus:"sonnet55",sonnet55:"sonnet",sonnet:"opus"};
 function winBrainLabel(m){return WIN_BRAIN[m]||WIN_BRAIN.opus}
@@ -4732,6 +4737,15 @@ function winKillAsk(c){
     catch(e){toast("Kill did not go through: "+String(e.message).slice(0,80)+" — use the phone link or Robinhood")}
     ov.remove();if(DK.view==="winston")dkWinston(true)}
 }
+/* v5.9.9 (Ifoma, 18 Nov): "Close this trade" lives on the Winston page only, not Josh's Desk. Tap, then confirm (goes back in 5 s).
+   It closes THROUGH Winston (fn=close_trade): the stop is cancelled, the real contract sold, and Winston's books close with it. */
+WIN.cx=WIN.cx||{};
+function winCloseBtn(t,bid){const id=String(t.id),c=WIN.cx[id],lv=(t.plan||{}).live||{},n=+(lv.ticket&&lv.ticket.qty)||1;
+  const real=!!(lv.entry_order_id&&lv.filled&&!lv.exit_fill&&!lv.stop_filled);
+  if(c&&c.step==="busy")return `<div class="win-cx"><button class="wcx-b" disabled>Closing…</button></div>`;
+  if(c&&c.step==="confirm"&&Date.now()-c.at<5000)return `<div class="win-cx"><button class="wcx-yes" data-wcx="yes" data-wid="${esc(id)}">Yes, close it now</button><button class="wcx-no" data-wcx="no" data-wid="${esc(id)}">Cancel</button><span class="mut">${real?`Sells the ${n} real contract${n>1?"s":""}${bid!=null?` at about $${(+bid).toFixed(2)}`:""}.`:"Paper only. Nothing goes to Robinhood."}</span></div>`;
+  const err=c&&c.step==="err"?`<div class="tr-msg bad" style="width:100%"><b>Not closed.</b> ${esc(c.msg||"")}</div>`:"";
+  return `<div class="win-cx">${err}<button class="wcx-b" data-wcx="start" data-wid="${esc(id)}">Close this trade</button></div>`}
 function winToday(j){
   const td=j.today||{},day=j.clock&&j.clock.day,lim=j.limits||{};
   const all=(j.trades||[]),tradesToday=all.filter(t=>t.day===day),open=tradesToday.filter(t=>t.status==="open");
@@ -4754,7 +4768,7 @@ function winToday(j){
       <div class="win-row"><div><span class="mut">Bought</span><b>${ent!=null?"$"+ent.toFixed(2):"—"}${qty>1?` <span class="mut">× ${qty}</span>`:""}</b></div><div><span class="mut">Since</span><b>${esc(winET(t.opened_at))}</b></div><div><span class="mut">Option now (sell price)</span><b>${bid!=null?"$"+bid.toFixed(2):"—"}</b></div>
       <div><span class="mut">Profit/loss <span class="win-est">ESTIMATE</span></span>${estTxt}${asOf?`<div class="mut" style="font-size:11px">as of ${esc(asOf)}</div>`:""}</div></div>
       ${winLadder(t,now)}
-      <div class="win-say"><b>Now:</b> holding ${esc(t.ticker)}, watching for a 10-minute close ${t.side==="put"?"over":"under"} ${esc(p.wrong_if_level)}, or a touch of ${esc(p.target_level)}.${p.breakeven_at?" Stop moved to breakeven.":""}${p.trail?" Trailing.":""}${passTxt} Flat by 3:50.</div></div>
+      <div class="win-say"><b>Now:</b> holding ${esc(t.ticker)}, watching for a 10-minute close ${t.side==="put"?"over":"under"} ${esc(p.wrong_if_level)}, or a touch of ${esc(p.target_level)}.${p.breakeven_at?" Stop moved to breakeven.":""}${p.trail?" Trailing.":""}${passTxt} Flat by 3:50.</div>${winCloseBtn(t,bid)}</div>
       ${winChart((lv||{}).bars,t)}`}).join("")
     :`<div class="win-banner"><div class="win-big mut">Not in a trade — watching</div><div class="mut" style="font-size:12.5px">${!c.enabled?"Winston is paused.":lim.locked?"Locked: "+esc(lim.locked.why)+".":`Opens 9:30 · coach ideas from 9:31 · his own ideas from ${ownT} · last entry 3:30 · flat 3:50.`+passTxt}</div></div>`;
   const note=i=>`<div class="win43-note"><span class="tm">${esc(winET(i.at||i.created_at||""))}</span><span class="tk">${esc(i.ticker||"—")}</span><span class="rs">${esc(i.reason||"")}</span><span class="st ${String(i.source||"").startsWith("coach")?"coach":""}">${String(i.source||"").startsWith("coach")?"coach":"own"} · ${esc(i.status||"")}</span></div>`;
@@ -4903,6 +4917,14 @@ async function dkWinston(keep){
   pg.innerHTML=`<div class="dkp win43">${winToday(j)}</div>`;pg.scrollTop=keep?sy:0;   // v4.3: one screen; Report / Scorecard / rules / how / trade cards are popups
   pg.querySelectorAll("[data-wpop]").forEach(b=>b.onclick=e=>{e.stopPropagation();winPop(b.dataset.wpop,b.dataset.wid)});
   const lk=$("#lcKill");if(lk)lk.onclick=e=>{e.stopPropagation();winKillAsk(WIN.lc)};
+  pg.querySelectorAll("[data-wcx]").forEach(b=>b.onclick=async e=>{e.stopPropagation();const id=b.dataset.wid,k=b.dataset.wcx;   // v5.9.9 Close this trade
+    if(k==="start"){WIN.cx[id]={step:"confirm",at:Date.now()};setTimeout(()=>{const c=WIN.cx[id];if(c&&c.step==="confirm"){delete WIN.cx[id];if(DK.view==="winston")dkWinston(true)}},5100);return dkWinston(true)}
+    if(k==="no"){delete WIN.cx[id];return dkWinston(true)}
+    if(k==="yes"){const c=WIN.cx[id];if(!c||c.step!=="confirm"||Date.now()-c.at>5000){delete WIN.cx[id];return dkWinston(true)}
+      WIN.cx[id]={step:"busy"};b.disabled=true;b.textContent="Closing…";
+      try{const r=await winApi("close_trade",{id:+id});delete WIN.cx[id];toast(r.live?"Closed. Winston cancelled the stop and sent the sell to Robinhood. The real fill shows on the trade within a minute.":"Closed (paper). Nothing went to Robinhood.")}
+      catch(err){WIN.cx[id]={step:"err",msg:String(err.message||err).slice(0,160)}}
+      if(DK.view==="winston")dkWinston(true)}});
   pg.querySelectorAll(".lc-mseg button[data-m]").forEach(b=>b.onclick=async e=>{e.stopPropagation();const mm=b.dataset.m;if(WIN.lc&&WIN.lc.mode===mm)return;
     try{const r=await winApi("live_mode_set",{mode:mm});toast("Winston mode is now "+String(r.live_mode||mm).toUpperCase())}catch(err){toast(String(err.message||err).slice(0,120))}
     if(DK.view==="winston")dkWinston(true)});   // v5.9.8: OFF / DRY only; LIVE is a paste
@@ -5838,9 +5860,11 @@ async function dkTradeLoad(){
   const ops=DK.panel&&DK.panel.agentic&&DK.panel.agentic.options;
   if(Array.isArray(ops)&&!ops.some(o=>+o.quantity>0)&&!dkPracOpen()){DK.tl={ok:true,trades:[],at:new Date().toISOString(),rth:true};dkRenderRight();trRefreshDialog();return}   // nothing open: no extra call
   try{DK.tl=await dkApi("trade_live")}catch(e){DK.tl={ok:false,error:e.message,trades:trCur(),rth:DK.tl?DK.tl.rth:true}}
+  if(trCur().some(t=>!t.practice&&!t.demo)){try{const w=await winApi("live_ids"),ids=new Set((w.ids||[]).map(String));trCur().forEach(t=>{if(ids.has(String(t.option_id)))t.winston=true})}catch(e){/* v5.9.9: can't tell = leave the row as it was */}}   // v5.9.9: Winston's real trades get no Close Now here
   dkRenderRight();trRefreshDialog();
 }
 function trBtn(t,big){
+  if(t.winston)return `<div class="tr-msg" style="background:#151c24;font-size:13px">Winston's real trade. He manages it himself. Ifoma closes it from the Winston page.</div>`;   // v5.9.9: no Close Now for Winston's trades on Josh's Desk
   const c=DK.cn[t.option_id]||{step:"idle"},cl=big?" big":"",o=esc(t.option_id),n=t.qty||1;
   if(!t.demo&&DK.tl&&DK.tl.rth===false)return `<button class="tr-cn${cl}" disabled>CLOSE NOW</button><div class="tr-msg bad"><b>Market is closed.</b> Close Now works 9:30 AM to 4:00 PM ET. ${t.practice?"The practice trade stays open until it is scored at the close.":"The trade stays open until 9:30 tomorrow, or close it in Robinhood."}</div>`;
   if(c.step==="confirm")return `<div class="tr-two${big?" big":""}"><button class="tr-yes" data-cn="yes" data-opt="${o}">Yes, sell ${n} contract${n>1?"s":""} now</button><button class="tr-no" data-cn="no" data-opt="${o}">Cancel</button></div><div class="mut" style="font-size:12px;margin-top:4px">Goes back in 5 seconds if you do nothing.${t.bid!=null?` Sell price now about $${t.bid.toFixed(2)}.`:""}${t.practice?" Practice: nothing goes to Robinhood.":""}</div>`;
@@ -5861,7 +5885,7 @@ function trCard(){
   if(!ts.length&&!d)return"";
   let h=`<div class="dk-cardx tr-card"><div class="dk-h">In a trade <b>${ts.length?"live":"closed"}</b></div>`;
   h+=ts.map(t=>{const e=t.est_pnl;
-    return `<div class="tr-row" data-trade="${esc(t.option_id)}" role="button" tabindex="0"><div><b>IN A TRADE</b> ${t.demo?`<span class="tr-prac" style="color:var(--gold);border-color:var(--gold)">DEMO</span> `:""}${t.practice?`<span class="tr-prac">PRACTICE</span>`:""}${esc(t.label)}<small>tap to open the chart and Close Now</small></div><b class="${trCls(e)}">${e==null?"price unavailable":trMoney(e)+" est."}</b></div>`+trBtn(t,false)}).join("");
+    return `<div class="tr-row" data-trade="${esc(t.option_id)}" role="button" tabindex="0"><div><b>IN A TRADE</b> ${t.demo?`<span class="tr-prac" style="color:var(--gold);border-color:var(--gold)">DEMO</span> `:""}${t.practice?`<span class="tr-prac">PRACTICE</span>`:""}${t.winston?`<span class="tr-win">WINSTON</span>`:""}${esc(t.label)}<small>${t.winston?"Winston's real trade. He manages it himself.":"tap to open the chart and Close Now"}</small></div><b class="${trCls(e)}">${e==null?"price unavailable":trMoney(e)+" est."}</b></div>`+trBtn(t,false)}).join("");
   if(d)h+=trDone(d);
   return h+`</div>`;
 }
