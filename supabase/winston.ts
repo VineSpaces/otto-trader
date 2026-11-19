@@ -2416,6 +2416,7 @@ export async function setEnabled(body: any) {
     const cur = (await getSetting("live_limits").catch(() => null)) || {}, next: any = { ...cur };
     for (const [k, v] of Object.entries(body.live_limits)) {
       if (k === "coach_only") { next.coach_only = v !== false; continue; }
+      if (k === "stop_be_after_p1") { next.stop_be_after_p1 = v !== false; continue; }
       if (!R[k]) throw new Error("unknown live limit: " + k);
       const n = Number(v); if (!(n >= R[k][0] && n <= R[k][1])) throw new Error(`${k} must be ${R[k][0]} to ${R[k][1]}`);
       next[k] = n;
@@ -2445,14 +2446,15 @@ export async function setEnabled(body: any) {
    ON   : the same plus real place_option_order, after the server-side caps. Paper fills stay the source of P&L in every mode. */
 // v5.5 (Ifoma, 5 Nov: "flip it as proposed"): week 1 is own ideas + coach LEVEL ideas under the v5.5 rules (coach-sourced −$764 on 34 trades, own +$1,246 on 16).
 // coach_only stays a switch: `config_set {live_limits:{coach_only:true}}` puts the old rule back.
-export const LIVE_DEFAULTS: any = { contracts: 1, max_premium: 250, day_kill: -300, week_kill: -750, max_open: 2, last_entry_min: 900, coach_only: false, min_bp: 4500 };
+export const LIVE_DEFAULTS: any = { contracts: 1, max_premium: 250, day_kill: -300, week_kill: -750, max_open: 2, last_entry_min: 900, coach_only: false, min_bp: 4500, stop_be_after_p1: true };
 export const LIVE_WORKING = new Set(["queued", "confirmed", "unconfirmed", "partially_filled", "new", "pending_cancelled"]);   // the same "still open" states otto-proxy uses
 export const liveModeOf = (cfg: any): "off" | "dry" | "on" => (cfg?.live_mode === "dry" || cfg?.live_mode === "on" ? cfg.live_mode : "off");
 export function liveLimitsOf(raw: any) {
   const o = { ...LIVE_DEFAULTS, ...(raw && typeof raw === "object" ? raw : {}) };
   return { contracts: Math.max(1, Math.floor(num(o.contracts)) || 1), max_premium: num(o.max_premium) > 0 ? num(o.max_premium) : 250,
     day_kill: -Math.abs(num(o.day_kill) || 300), week_kill: -Math.abs(num(o.week_kill) || 750), max_open: Math.max(1, Math.floor(num(o.max_open)) || 2),
-    last_entry_min: num(o.last_entry_min) > 0 ? num(o.last_entry_min) : 900, coach_only: o.coach_only === true, min_bp: num(o.min_bp) > 0 ? num(o.min_bp) : 4500 };
+    last_entry_min: num(o.last_entry_min) > 0 ? num(o.last_entry_min) : 900, coach_only: o.coach_only === true, min_bp: num(o.min_bp) > 0 ? num(o.min_bp) : 4500,
+    stop_be_after_p1: o.stop_be_after_p1 !== false };   // v5.9.10: after Profit 1 the broker stop moves up to break-even (a switch)
 }
 export type LiveSnap = { qty: number; premium: number; source: string; min: number; openLive: number; dayPnl: number; weekPnl: number; killed: boolean; blocked: string | null; mismatchToday: boolean };
 // The caps, in one pure function. Called BEFORE any place_*; a non-null answer means the ticket is not sent.
@@ -2537,7 +2539,7 @@ export function reconcileDiff(mode: string, positions: any[], orders: any[], tra
   }
   for (const id of Object.keys(expect)) if (!longs.some((p: any) => String(p.option_id) === id)) out.push({ kind: "missing_position", detail: `books say ${id} is held; Robinhood does not show it` });
   const known = new Set<string>();
-  for (const t of trades || []) for (const k of ["entry_order_id", "stop_order_id", "exit_order_id"]) { const v = t?.plan?.live?.[k]; if (v) known.add(String(v)); }
+  for (const t of trades || []) for (const k of ["entry_order_id", "stop_order_id", "exit_order_id", "stop_prev_order_id"]) { const v = t?.plan?.live?.[k]; if (v) known.add(String(v)); }
   for (const o of orders || []) if (LIVE_WORKING.has(String(o?.state)) && !known.has(String(o.id))) out.push({ kind: "unknown_order", detail: `a working order ${String(o.id).slice(0, 8)} is not one Winston sent` });
   if (mode === "on") for (const t of live) { const sid = t.plan.live.stop_order_id; if (t.status === "open" && !(sid && (orders || []).some((o: any) => String(o.id) === String(sid) && LIVE_WORKING.has(String(o.state))))) out.push({ kind: "stop_missing", detail: `${t.ticker}: no working broker stop` }); }
   return out;
@@ -2691,6 +2693,10 @@ export async function liveSync(cfg: any, day: string, min: number): Promise<any>
   const trades: any[] = [...rowsDay, ...rowsOpen.filter((o) => !rowsDay.some((r) => r.id === o.id))];
   const byId = (id: any) => orders.find((o: any) => String(o.id) === String(id));
   const nowIso = () => new Date(nowMs()).toISOString();
+  // v5.9.10 (19 Nov): `orders` is read once at the start of this look. A stop placed (or cancelled) during the look is not in it, which made the
+  // books check say "no working broker stop" one second after the SPY 727P stop went on. These two sets carry what this look itself did.
+  const placedNow = new Set<string>(), cancelledNow = new Set<string>();
+  const LL = mode === "on" ? await getLiveLimits() : null;
   if (mode === "on") for (const t of trades) {
     const l = t.plan?.live; if (!l || !l.entry_order_id) continue;
     const nl: any = { ...l }; let ch = false, triedStop = false;
@@ -2701,7 +2707,7 @@ export async function liveSync(cfg: any, day: string, min: number): Promise<any>
         nl.filled = true; nl.fill = orderFill(o) ?? num(l.ticket?.ask); ch = true;
         await llog("live_order", `${t.ticker} ${t.label || ""} · BUY ${qty}`, "FILLED", `$${num(nl.fill).toFixed(2)} (paper said $${num(t.entry_fill).toFixed(2)})`, { trade: t.id });
         const stop = num(t.plan?.stop_option);
-        if (t.status === "open" && stop > 0 && roundStopUp(stop, true) < num(nl.fill)) { triedStop = true; await placeLiveStop(t, nl, stop, qty); }
+        if (t.status === "open" && stop > 0 && roundStopUp(stop, true) < num(nl.fill)) { triedStop = true; if (await placeLiveStop(t, nl, stop, qty)) placedNow.add(String(nl.stop_order_id)); }
         else if (t.status === "open") { nl.stop_tries = LIVE_STOP_TRIES; nl.stop_error = `stop $${stop.toFixed(2)} is not below the fill $${num(nl.fill).toFixed(2)}`; }
       } else if (o && ["cancelled", "canceled", "rejected", "failed"].includes(String(o.state))) { nl.entry_state = String(o.state); ch = true; await llog("live_order", `${t.ticker} · BUY ${qty}`, String(o.state).toUpperCase(), "no live position", { trade: t.id }); }
       else if (nowMs() - Date.parse(nl.placed_at || nowIso()) > 180e3) { try { await lv("cancel_option_order", { order_id: nl.entry_order_id }); } catch { /* */ } nl.entry_state = "cancelled_timeout"; ch = true; await llog("live_order", `${t.ticker} · BUY ${qty}`, "CANCELLED", "not filled in 3 minutes", { trade: t.id }); }
@@ -2718,11 +2724,41 @@ export async function liveSync(cfg: any, day: string, min: number): Promise<any>
         } catch (e) { nl.error = String((e as Error).message).slice(0, 160); ch = true; }
       }
     }
+    // v5.9.10 (Ifoma, 19 Nov: "make the decision"): once Profit 1 has run, the broker stop moves up ONCE to break-even (the real fill, on Robinhood's
+    // step). Cancel, then place. If the new stop is refused the old price goes back on; if that is refused too, the block below sells (never naked).
+    if (LL?.stop_be_after_p1 && t.status === "open" && t.plan?.p1 && nl.filled && !nl.exit_fill && !nl.stop_filled && nl.stop_order_id && !nl.exit_order_id && !nl.stop_be) {
+      const be = roundStopUp(num(nl.fill)), old = num(nl.stop_price), bid = num(t.plan?.last_mark?.bid), so2 = byId(nl.stop_order_id);
+      if (be > old && bid > roundStopUp(be, true) && so2 && LIVE_WORKING.has(String(so2.state))) {
+        ch = true; nl.stop_be = { at: nowIso(), from: old, to: be };
+        let cancelled = false;
+        try { await lv("cancel_option_order", { order_id: nl.stop_order_id }); cancelled = true; }
+        catch (e) { nl.stop_be.to = old; nl.stop_be.error = "cancel: " + String((e as Error).message).slice(0, 120); }   // the old stop stays as it is
+        if (cancelled) {   // wait until Robinhood shows the old stop as no longer working (up to ~6 s), so the new one is not refused for a contract still tied up
+          let state = "";
+          for (let i = 0; i < 4; i++) {
+            await new Promise((r) => setTimeout(r, T ? 0 : 1500));
+            try { state = String((await lv("get_option_orders", { order_id: nl.stop_order_id }))?.data?.orders?.[0]?.state || ""); } catch { state = ""; }
+            if (state && !LIVE_WORKING.has(state)) break;
+          }
+          if (state === "filled") { cancelled = false; nl.stop_be.to = old; nl.stop_be.error = "the old stop filled first"; }   // the next look reads that fill
+        }
+        if (cancelled) {
+          const tries = num(nl.stop_tries) || 0, prevId = String(nl.stop_order_id);
+          cancelledNow.add(prevId); nl.stop_prev_order_id = prevId; nl.stop_order_id = null;
+          let ok = await placeLiveStop(t, nl, be, qty);
+          if (!ok) { nl.stop_be.error = "new stop refused: " + String(nl.stop_error || "").slice(0, 100); ok = await placeLiveStop(t, nl, old, qty); nl.stop_be.to = ok ? old : null; }
+          if (ok) {
+            nl.stop_tries = tries; placedNow.add(String(nl.stop_order_id));
+            await llog("live_order", `${t.ticker} · broker stop after Profit 1`, nl.stop_be.to === be ? "MOVED" : "KEPT", `$${old.toFixed(2)} → $${num(nl.stop_price).toFixed(2)}${nl.stop_be.to === be ? " (break-even)" : " (the new price was refused)"}`, { trade: t.id });
+          } else { nl.stop_tries = LIVE_STOP_TRIES; triedStop = true; }
+        }
+      }
+    }
     // v5.9.9: a filled, open live trade with no broker stop: try again; after LIVE_STOP_TRIES, close it (paper + live) right away.
     let sellNow = false;
     if (t.status === "open" && nl.filled && !nl.exit_fill && !nl.stop_filled && !nl.stop_order_id && !nl.exit_order_id) {
       const stop = num(t.plan?.stop_option);
-      if (!triedStop && (num(nl.stop_tries) || 0) < LIVE_STOP_TRIES && stop > 0 && roundStopUp(stop, true) < num(nl.fill)) { ch = true; await placeLiveStop(t, nl, stop, qty); }
+      if (!triedStop && (num(nl.stop_tries) || 0) < LIVE_STOP_TRIES && stop > 0 && roundStopUp(stop, true) < num(nl.fill)) { ch = true; if (await placeLiveStop(t, nl, stop, qty)) placedNow.add(String(nl.stop_order_id)); }
       if (!nl.stop_order_id && (num(nl.stop_tries) || 0) >= LIVE_STOP_TRIES) { sellNow = true; ch = true; nl.no_stop_exit = true; }
     }
     if (ch) { t.plan = { ...t.plan, live: nl }; await patchPlan(t.id, t.plan); }
@@ -2731,7 +2767,8 @@ export async function liveSync(cfg: any, day: string, min: number): Promise<any>
       try { const c = await closeTrade(t, "no_broker_stop", ["live_no_stop"]); Object.assign(t, c); } catch (e) { await wlog("live_error", { where: "no_stop_exit", msg: String((e as Error).message).slice(0, 160) }); }
     }
   }
-  const mm = reconcileDiff(mode, positions, orders, trades);
+  const ordersNow = [...orders.filter((o: any) => !cancelledNow.has(String(o.id))), ...[...placedNow].filter((id) => !byId(id)).map((id) => ({ id, state: "confirmed" }))];
+  const mm = reconcileDiff(mode, positions, ordersNow, trades);
   const prev = await liveState();
   await liveStatePatch({ recon: { at: nowIso(), ok: mm.length === 0, n: mm.length, mismatches: mm.slice(0, 10) }, ...(mm.length ? { mismatch_day: day } : {}) });
   if (mm.length && !(prev.recon && !prev.recon.ok && JSON.stringify(prev.recon.mismatches) === JSON.stringify(mm.slice(0, 10)))) {
