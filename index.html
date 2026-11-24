@@ -2775,7 +2775,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.9.9";
+const BUILD="5.9.11";
 // v5.7.1 (9 Nov): the brain has three settings — label + the next one in the cycle. Server: winApi("config_set",{model}) accepts opus | sonnet55 | sonnet.
 const WIN_BRAIN={opus:"Opus 5.5",sonnet55:"Sonnet 5.5",sonnet:"Sonnet 4.6"},WIN_BRAIN_NEXT={opus:"sonnet55",sonnet55:"sonnet",sonnet:"opus"};
 function winBrainLabel(m){return WIN_BRAIN[m]||WIN_BRAIN.opus}
@@ -5357,7 +5357,8 @@ const ccState=s=>s==="win"?`<span class="cc-chip win">WIN</span>`:s==="loss"?`<s
 function ccSideHtml(sd){
   const $p=sd.pnl!=null&&["win","loss","flat"].includes(sd.state)?` <span class="mono ${sd.pnl>=0?"up":"dn"}">${sd.pnl>=0?"+":"−"}$${Math.abs(sd.pnl)}${sd.est?" est.":""}</span>`:"";
   const how=sd.exit_why&&["win","loss","flat"].includes(sd.state)?`<div class="mut" style="font-size:11.5px">${esc(sd.entry_px)} → ${esc(sd.exit_px)} · ${esc(sd.exit_why)}${sd.opt?` · ${esc(sd.opt.label||"option")} ${sd.opt.entry}→${sd.opt.exit}`:""}</div>`:sd.why?`<div class="mut" style="font-size:11.5px">${esc(sd.why)}</div>`:"";
-  return `<div>${ccState(sd.state)}${$p}${how}</div>`;
+  const dup=sd.dup?`<div class="mut" style="font-size:11.5px">same trade as an earlier post · counted once</div>`:"";   /* v5.9.11 */
+  return `<div>${ccState(sd.state)}${$p}${how}${dup}</div>`;
 }
 /* v4.8.3: the 30-day and All ranges are slow on the server — fetch them quietly in the background once Coach's Corner has loaded, so the tap is instant */
 function ccWarm(){if(CC.warming)return;CC.warming=true;
@@ -5387,14 +5388,19 @@ async function dkCoach(cached){
   }).join("");
   const sp=(j.splits||[]).map(x=>`<div class="dk-cardx"><div style="font-size:13px;font-weight:600">${esc(x.key)}</div>${x.n>=5?`<div class="mono" style="font-size:20px;margin-top:4px">${x.win_pct==null?"—":x.win_pct+"%"}</div><div class="mut mono" style="font-size:12px">${x.n} scored · ${dk$(x.pnl)}</div><div style="height:6px;background:var(--surface-3);border-radius:3px;margin-top:6px"><i style="display:block;height:6px;border-radius:3px;width:${x.win_pct||0}%;background:${(x.win_pct||0)>=50?"var(--up)":"var(--down)"}"></i></div>`:`<div class="mut" style="font-size:12px;margin-top:6px">${x.n} scored — shows at 5</div>`}</div>`).join("");
   pg.innerHTML=`<div class="dkp">${dkRTabs("coach")}
-    <div class="dkp-head"><h2>Coach's Corner</h2><span class="mut">Every post from the Coach, scored as if we had played it: 1 contract, real option prices when we had the contract (else an estimate). Coach on one side, Jarvis + Us on the other.</span>
+    <div class="dkp-head"><h2>Coach's Corner</h2><span class="mut">Every post from the Coach, scored as if we had played it: 1 contract, real option prices when we had the contract (else an estimate). Posts about selling options or spreads are not scored; the same trade posted twice counts once. Coach on one side, Jarvis + Us on the other.</span>
       <span role="group" aria-label="Time range" style="margin-left:auto;display:flex;gap:4px">${RL.map(([k,v])=>`<button class="dk-btn ${CC.range===k?"go":"sec"}" data-ccr="${k}">${v}</button>`).join("")}</span></div>
     <div class="cc-sent"><b>${c.posts} post${c.posts===1?"":"s"}</b> in this range${c.pending?`, ${c.pending} still open (scored at the close)`:""}. On the ones already scored, playing every post at 1 contract would have been <b>${c.wins} win${c.wins===1?"":"s"}, ${c.losses} loss${c.losses===1?"":"es"}, ${c.posts?dkMoney(c.pnl):"—"}</b> (estimate). We actually traded <b>${(u.wins||0)+(u.losses||0)}</b> of them — ${u.wins} win${u.wins===1?"":"s"}, ${u.losses} loss${u.losses===1?"":"es"}, ${dkMoney(u.pnl)} in real fills — and passed on <b>${u.passed}</b>.</div>
     <div class="cc-g2">
       <div class="dk-cardx"><div class="dk-h"><span class="cc-chip coach">COACH</span> had we played every post</div>
         <div style="display:flex;gap:26px;flex-wrap:wrap;align-items:baseline"><div><div class="n" style="font-size:30px;font-weight:700">${c.posts?dkMoney(c.pnl):"—"}</div><div class="mut" style="font-size:12px">est. P&amp;L, 1 contract each</div></div>
         <div><div class="mono" style="font-size:20px">${c.wins}–${c.losses}</div><div class="mut" style="font-size:12px">wins – losses</div></div><div><div class="mono" style="font-size:20px">${c.posts}</div><div class="mut" style="font-size:12px">posts</div></div></div>
-        ${c.pending?`<div class="mut" style="font-size:12px;margin-top:6px">${c.pending} still open — final scores at the close.</div>`:""}</div>
+        ${c.pending?`<div class="mut" style="font-size:12px;margin-top:6px">${c.pending} still open — final scores at the close.</div>`:""}
+        ${c.fit?`<div class="cc-fit" style="margin-top:10px;padding-top:10px;border-top:1px solid var(--rule)"><div class="dk-h" style="margin-bottom:4px">What fits our account, after spread</div>
+          <div style="display:flex;gap:26px;flex-wrap:wrap;align-items:baseline"><div><div class="n" style="font-size:22px;font-weight:700">${dkMoney(c.fit.pnl)}</div><div class="mut" style="font-size:12px">real option prices, minus about $${esc(c.fit.spread_usd)} spread a trade</div></div>
+          <div><div class="mono" style="font-size:18px">${c.fit.wins}–${c.fit.losses}</div><div class="mut" style="font-size:12px">wins – losses on ${c.fit.n} trade${c.fit.n===1?"":"s"}</div></div>
+          <div><div class="mono" style="font-size:18px">$${Number(c.fit.account).toLocaleString()}</div><div class="mut" style="font-size:12px">the most one contract can cost (the account)</div></div></div>
+          <div class="mut" style="font-size:12px;margin-top:6px">Left out: ${c.fit.too_big} trade${c.fit.too_big===1?"":"s"} too big for the account · ${c.fit.est} with no real option price (estimates only).</div></div>`:""}</div>
       <div class="dk-cardx"><div class="dk-h"><span class="cc-chip warn">JARVIS + US</span> what we actually did · real fills</div>
         <div style="display:flex;gap:26px;flex-wrap:wrap;align-items:baseline"><div><div class="n" style="font-size:30px;font-weight:700">${dkMoney(u.pnl)}</div><div class="mut" style="font-size:12px">realized</div></div>
         <div><div class="mono" style="font-size:20px">${u.wins}–${u.losses}</div><div class="mut" style="font-size:12px">wins – losses</div></div><div><div class="mono" style="font-size:20px">${u.passed}</div><div class="mut" style="font-size:12px">posts we didn't trade</div></div>

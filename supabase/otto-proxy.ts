@@ -8417,6 +8417,14 @@ export async function factCheck326(text: string): Promise<{ text: string; notes:
 /* ---------------- Coaches Corner ---------------- */
 const EXIT_POST = /\bTOOK (?:OFF )?(?:HALF|SOME|PROFITS?|MOST)|\bTRIM(?:MED|MING)?\b|\bTAKING (?:SOME|PROFITS?|HALF)|\bSOLD (?:HALF|SOME|ALL)|\bI'?M OUT\b|\bCLOSED (?:IT|MY|THE)|\bOUT OF (?:IT|MY|THE)\b|\bLOCKED IN\b/i;
 export const isExitPost = (r: any) => EXIT_POST.test(String(r?.words || ""));
+// v5.9.11 (Ifoma, 23 Nov): a post about SELLING options or about a spread is not a 1-contract buy, so it is not scored. (The 5 Nov MU
+// "sell some short puts" post was scored as a put BUY and showed +$1,896; the 19 Nov MSFT credit spread was scored as a put buy, twice.)
+const PREMIUM_POST = /\b(?:CREDIT|DEBIT|CALL|PUT)\s+SPREADS?\b|\bSELL(?:ING)?\s+(?:SOME\s+)?(?:SHORT\s+)?(?:PUTS?|CALLS?)\b|\bSHORT\s+(?:PUTS?|CALLS?)\b/i;
+export const isPremiumPost = (r: any) => PREMIUM_POST.test(String(r?.words || ""));
+export const CC_NOT_A_BUY = "selling options or a spread, not a 1-contract buy";
+/** What one round trip costs in spread, in dollars, for the "fits our account" number. A number, not a rule: otto_settings key
+ *  `coach_corner` {spread_usd} overrides it. 22 = Winston's measured average ($1,597 over 72 trades, to 16 Nov). */
+export const CC_SPREAD_USD = 22;
 export type CCSide = { side: "up" | "down"; state: string; why?: string; entry_at?: string; entry_px?: number; exit_at?: string; exit_px?: number; exit_why?: string;
   opt?: { id: string; label?: string; entry: number; exit: number } | null; pnl?: number | null; est?: boolean };
 /** One side of a coach post, on the underlying's 5-minute bars (+ the option's bars when we know the contract). */
@@ -8460,6 +8468,7 @@ const pxAt = (bars: Bar[], t: number) => { let v: number | null = null; for (con
 export async function coachScore(r: any, cards: any[], exits: any[]): Promise<any> {
   const tk = String(r.ticker || "").toUpperCase();
   if (!tk || !r.posted_at) return { state: "unscored", why: !tk ? "no ticker" : "no time" };
+  if (isPremiumPost(r)) return { state: "unscored", why: CC_NOT_A_BUY, sides: [] };   // v5.9.11
   const day = r.day, open = nyIso(day, "9:30 AM"), close = nyIso(day, "4:00 PM");
   if (!open || !close) return { state: "unscored", why: "no session" };
   const lv = Number(r.level) > 0 ? Number(r.level) : (levelsFromWords(r.words || "")[0]?.level || null);
@@ -8522,9 +8531,17 @@ export async function coachCorner(range = "today") {
       }
     }));
   }
+  const seenTrade = new Set<string>();   // v5.9.11: same ticker, same side, same entry bar = ONE trade; the first post keeps it
   for (const r of main) {
     const cards = cardsOf(r);
-    const cc = fresh.has(r.id) ? fresh.get(r.id) : r.cc;
+    let cc = fresh.has(r.id) ? fresh.get(r.id) : r.cc;
+    if (isPremiumPost(r) && cc?.state !== "unscored") cc = { state: "unscored", why: CC_NOT_A_BUY, sides: [] };   // v5.9.11: also for posts scored before the fix
+    if (cc && Array.isArray(cc.sides) && cc.sides.length) cc = { ...cc, sides: cc.sides.map((sd: any) => {
+      if (!["win", "loss", "flat"].includes(sd.state) || !sd.entry_at) return sd;
+      const k = `${r.day}|${String(r.ticker).toUpperCase()}|${sd.side}|${sd.entry_at}`;
+      if (seenTrade.has(k)) return { ...sd, dup: true };
+      seenTrade.add(k); return sd;
+    }) };
     const cd = dirOfCoach(r.direction);
     const did = cards.map((a: any) => {
       const d = a.plan?.direction === "down" ? "down" : "up";
@@ -8538,8 +8555,8 @@ export async function coachCorner(range = "today") {
       us_pnl: did.some((d: any) => d.pnl != null) ? did.reduce((s: number, d: any) => s + (d.pnl || 0), 0) : null });
   }
   // totals + splits
-  const coachPnl = (x: any) => (x.cc?.sides || []).filter((s: any) => ["win", "loss", "flat"].includes(s.state)).reduce((t: number, s: any) => t + (Number(s.pnl) || 0), 0);
-  const scoredSides = (l: any[], pick?: (x: any, s: any) => boolean) => l.flatMap((x) => (x.cc?.sides || []).filter((s: any) => ["win", "loss", "flat"].includes(s.state) && (!pick || pick(x, s))));
+  const coachPnl = (x: any) => (x.cc?.sides || []).filter((s: any) => ["win", "loss", "flat"].includes(s.state) && !s.dup).reduce((t: number, s: any) => t + (Number(s.pnl) || 0), 0);
+  const scoredSides = (l: any[], pick?: (x: any, s: any) => boolean) => l.flatMap((x) => (x.cc?.sides || []).filter((s: any) => ["win", "loss", "flat"].includes(s.state) && !s.dup && (!pick || pick(x, s))));
   const agg = (sides: any[]) => { const w = sides.filter((s) => s.state === "win").length, lo = sides.filter((s) => s.state === "loss").length;
     return { n: sides.length, wins: w, losses: lo, win_pct: w + lo ? Math.round(w / (w + lo) * 100) : null, pnl: Math.round(sides.reduce((t, s) => t + (Number(s.pnl) || 0), 0)) }; };
   const min = (x: any) => x.at ? etParts(new Date(x.at)).min : 0;
@@ -8558,12 +8575,26 @@ export async function coachCorner(range = "today") {
     { key: "Against the market mood", ...agg(scoredSides(out, (x, s) => !!tone(bannerCache[x.id]) && tone(bannerCache[x.id]) !== s.side)) },
   ];
   const coach = agg(scoredSides(out));
+  // v5.9.11: the number we could really have taken: trades with a REAL option price whose contract costs no more than the Agentic account,
+  // minus the spread on each. Estimates (no option price) and contracts bigger than the account are left out and counted.
+  let fit: any = null;
+  try {
+    const st = await setting("coach_corner").catch(() => null);
+    const spreadUsd = st && st.spread_usd != null && Number(st.spread_usd) >= 0 ? Number(st.spread_usd) : CC_SPREAD_USD;
+    const acct = await agenticValue().catch(() => null);
+    if (acct && acct > 0) {
+      const all = scoredSides(out), priced = all.filter((s: any) => s.opt && Number(s.opt.entry) > 0);
+      const ok = priced.filter((s: any) => Number(s.opt.entry) * 100 <= acct), a = agg(ok);
+      fit = { n: a.n, wins: a.wins, losses: a.losses, gross: a.pnl, spread_usd: spreadUsd, pnl: Math.round(a.pnl - a.n * spreadUsd), account: Math.round(acct),
+        too_big: priced.length - ok.length, est: all.length - priced.length };
+    }
+  } catch { fit = null; }
   const usCards = out.flatMap((x) => x.cards);
   const us = { pnl: Math.round(usCards.reduce((t: number, c: any) => t + (Number(c.pnl) || 0), 0)), wins: usCards.filter((c: any) => (c.pnl || 0) > 0).length,
     losses: usCards.filter((c: any) => (c.pnl || 0) < 0).length, passed: out.filter((x) => !x.cards.some((c: any) => c.we === "took it")).length,
     wrong_side: usCards.filter((c: any) => c.wrong_side).length };
   return { ok: true, range, since, posts: out.reverse(), coach: { ...coach, pnl: Math.round(out.reduce((t, x) => t + coachPnl(x), 0)), posts: out.length,
-    pending: out.filter((x) => x.cc?.state !== "scored").length }, us, splits };
+    pending: out.filter((x) => x.cc?.state !== "scored").length, fit }, us, splits };
 }
 /** The Friday report card: totals, follow / wait, and the posts to bring to the 1:1. */
 export async function coachReport() {

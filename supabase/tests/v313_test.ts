@@ -2197,6 +2197,55 @@ Deno.test("v3.26 Coaches Corner: MSFT 532.40 scored both ways; ABBV exits at his
   assert(T.otto_jason[0].cc?.state === "scored", "saved once the day is done");
 });
 
+Deno.test("v5.9.11 Coaches Corner: spread / sold-option posts are not scored (old stored scores too); a repeat counts once; the fits-our-account number", async () => {
+  assert(M.isPremiumPost({ words: "UNPOPULAR TRADE. MU ABOUT TO SELL SOME SHORT PUTS TODAY INTO NVDA EARNINGS" }) && M.isPremiumPost({ words: "12/18/26 530/540 CREDIT SPREAD MSFT" })
+    && M.isPremiumPost({ words: "AAPL $350/345 PUT CREDIT SPREADS" }) && M.isPremiumPost({ words: "I HAVE CALL SPREADS ON AMD LOL 640/660" }) && M.isPremiumPost({ words: "SPY 700/698 PUT CREDIT SPREAD 0 DTE" }), "spread / sold-option posts");
+  assert(!M.isPremiumPost({ words: "WATCH LITE TO HOLD PHM. COULD BE NICE BOUNCE. WATCH WIDE SPREAD ALERT" }) && !M.isPremiumPost({ words: "QQQ / 660 CALLS LONG LOTTO / 11/06" })
+    && !M.isPremiumPost({ words: "QQQ 722 / 724 / 728" }) && !M.isPremiumPost({ words: "AAOI CALLS $70 STRIKE" }) && !M.isPremiumPost({ words: "MSFT 532.40 RESISTANCE" }), "ordinary posts are still scored");
+  const t0 = RealDate.parse("2026-10-09T13:30:00Z");
+  const ms: number[][] = []; let p = 527;
+  for (let i = 0; i < 14; i++) { ms.push([p, p + 0.6, p - 0.3, p + 0.35]); p += 0.35; }
+  ms.push([531.9, 532.3, 531.6, 532.2], [532.3, 533.3, 532.25, 533.02], [533, 533.5, 532.9, 533.4]);
+  for (let i = 0; i < 70; i++) ms.push([533.4, 533.8, 533.0, 533.4]);
+  r26("2026-10-09T21:00:00Z");
+  const post = (id: number, at: string, kind: string, direction: string | null, level: number | null, words: string, cc?: any) =>
+    ({ id, day: "2026-10-09", posted_at: at, posted_label: "9:23 AM", kind, ticker: "MSFT", direction, level, words, ...(cc ? { cc } : {}) });
+  T.otto_jason.push(post(87, "2026-10-09T13:23:00Z", "level", null, 532.4, "MSFT 532.40 RESISTANCE"));
+  T.otto_jason.push(post(88, "2026-10-09T13:23:30Z", "call", "long", null, "MSFT CALLS HERE"));
+  T.otto_jason.push(post(89, "2026-10-09T13:24:00Z", "call", "short", null, "12/18/26 530/540 CREDIT SPREAD MSFT"));
+  T.otto_jason.push(post(90, "2026-10-09T13:24:10Z", "call", "short", null, "12/18/26 530/540 CREDIT SPREAD MSFT / $3.80-$4.00",
+    { state: "scored", coach_dir: "down", sides: [{ side: "down", state: "win", pnl: 529, est: true, entry_at: "2026-10-09T13:35:00.000Z", exit_at: "2026-10-09T19:50:00.000Z", exit_why: "3:50 PM" }] }));
+  T.otto_jason.push(post(91, "2026-10-09T13:25:00Z", "call", "short", null, "MSFT PUTS"));
+  T.otto_jason.push(post(92, "2026-10-09T13:26:00Z", "call", "short", null, "MSFT PUTS AGAIN"));
+  T.otto_actions.push({ id: "c-up", title: "SCALP · Buy 1 MSFT 537.5C 10/12 @ $1.84", status: "rejected", created_at: "2026-10-09T14:51:00Z", plan: { direction: "up", tp1: 536, watch_id: 9, jason_id: 87 }, exit: { option_id: "msft-537.5c" } });
+  T.otto_actions.push({ id: "c-big", title: "SCALP · Buy 1 MSFT 500C 10/12 @ $30.00", status: "rejected", created_at: "2026-10-09T13:31:00Z", plan: { direction: "up", jason_id: 88 }, exit: { option_id: "big" } });
+  T.otto_watch.push({ id: 9, day: "2026-10-09", ticker: "MSFT", level: 532.4, source: "signal", source_ref: "87" });
+  callHook = (tool: string, args: any) => {
+    if (tool === "get_equity_historicals") return { data: { results: [{ symbol: "MSFT", bars: ms.map((r, i) => ({ begins_at: new RealDate(t0 + i * 5 * 60e3).toISOString(), open_price: r[0], high_price: r[1], low_price: r[2], close_price: r[3] })) }] } };
+    if (tool === "get_option_historicals") { const big = String((args?.instrument_ids || [])[0]) === "big";
+      return { data: { results: [{ bars: ms.map((_r, i) => ({ begins_at: new RealDate(t0 + i * 5 * 60e3).toISOString(), open_price: 1, high_price: 1, low_price: 1, close_price: big ? (i < 16 ? 30 : 31) : (i < 16 ? 1.84 : 2.40) })) }] } }; }
+    return null;   // get_portfolio falls through to the harness default: $1,196.91
+  };
+  const cc: any = await M.coachCorner("today");
+  const row = (id: number) => cc.posts.find((x: any) => x.id === id);
+  assert(row(89).cc.state === "unscored" && row(89).cc.why === M.CC_NOT_A_BUY && !row(89).cc.sides.length, "a new spread post is not scored: " + JSON.stringify(row(89).cc));
+  assert(row(90).cc.state === "unscored" && row(90).cc.why === M.CC_NOT_A_BUY, "a spread post scored BEFORE the fix is shown unscored: " + JSON.stringify(row(90).cc));
+  const s91 = row(91).cc.sides[0], s92 = row(92).cc.sides[0];
+  assert(s91.state === "loss" && !s91.dup && s92.dup === true && s92.entry_at === s91.entry_at && s92.pnl === s91.pnl, "the repeat is marked: " + JSON.stringify([s91, s92]));
+  const up87 = row(87).cc.sides.find((x: any) => x.side === "up"), up88 = row(88).cc.sides[0];
+  assert(up87.pnl === 56 && up87.est === false && up88.pnl === 100 && up88.est === false, JSON.stringify([up87, up88]));
+  assert(cc.coach.n === 3 && cc.coach.wins === 2 && cc.coach.losses === 1 && cc.coach.pnl === 56 + 100 + s91.pnl, "totals: the spread posts add nothing and the repeat counts once: " + JSON.stringify(cc.coach));
+  const f = cc.coach.fit;
+  assert(f && f.account === 1197 && f.n === 1 && f.wins === 1 && f.losses === 0 && f.gross === 56 && f.spread_usd === 22 && f.pnl === 34 && f.too_big === 1 && f.est === 1, "fits our account: " + JSON.stringify(f));
+  const calls = cc.splits.find((x: any) => /^Calls/.test(x.key));
+  assert(calls.n === 2, "the splits skip the repeat and the spread posts too: " + JSON.stringify(calls));
+  // the spread cost is a number in settings, not hard-coded
+  T.otto_settings.push({ key: "coach_corner", value: { spread_usd: 10 } }); (M as any).clearCacheForTest();
+  const cc2: any = await M.coachCorner("today");
+  assert(cc2.coach.fit.pnl === 46 && cc2.coach.fit.spread_usd === 10, JSON.stringify(cc2.coach.fit));
+  assert(T.otto_jason.find((r: any) => r.id === 89).cc?.state === "unscored", "saved as not scored once the day is done");
+});
+
 Deno.test("v3.27: a source that is not switched on to go LIVE becomes a PAPER card (never approvable); the manual ticket is unaffected", async () => {
   reset(); (M as any).clearCacheForTest(); T.otto_settings = [{ key: "limits", value: { size_cap_on: false, kill_on: false } }];   // defaults: only the coach's call may go live
   const c: any = await M.proposeAction(spyCard(), "watcher");
