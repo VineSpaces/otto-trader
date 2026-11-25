@@ -2775,7 +2775,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.9.11";
+const BUILD="5.9.12";
 // v5.7.1 (9 Nov): the brain has three settings — label + the next one in the cycle. Server: winApi("config_set",{model}) accepts opus | sonnet55 | sonnet.
 const WIN_BRAIN={opus:"Opus 5.5",sonnet55:"Sonnet 5.5",sonnet:"Sonnet 4.6"},WIN_BRAIN_NEXT={opus:"sonnet55",sonnet55:"sonnet",sonnet:"opus"};
 function winBrainLabel(m){return WIN_BRAIN[m]||WIN_BRAIN.opus}
@@ -3400,7 +3400,7 @@ function openDesk(){
   $("#dkWho").value=LS.get("deskWho","Josh");
   dkRenderLeft();dkRenderRight();dkRenderStrip();dkRenderBanner();
   if(typeof ncLoad==="function")ncLoad(true);
-  dkShow(innerWidth<=1099?"desk":(DK.opened?LS.get("dkView","desk"):(typeof layHome==="function"?layHome():"desk")));DK.opened=true;
+  dkShow(innerWidth<=1099?"desk":(()=>{const s=LS.get("dkView",null);return DK_VIEWS.includes(s)?s:(typeof layHome==="function"?layHome():"desk")})());DK.opened=true;   // v5.9.12: a refresh reopens the page you were on; the ★ home tab is only for when no page was saved
   if(innerWidth<=1099)sgShow(true);   // v3.28: phone opens on Desk with Otto Signals showing
   dkStart();
 }
