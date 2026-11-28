@@ -1052,15 +1052,15 @@ export function gradeShadow(s: { side: string; spot: number; wrong_if: number; t
   if (now >= endMs && after.length) { const last = after[after.length - 1]; return { state: "time", at: last.t + 600e3, exit: last.c, r: rr(last.c), pnl_est: est(last.c) }; }
   return null;
 }
-export async function bookShadow(day: string, d: Partial<Decision>, spot: number, rule: string, why: string): Promise<number | null> {
+export async function bookShadow(day: string, d: Partial<Decision>, spot: number, rule: string, why: string, o: { createdMs?: number; extra?: Record<string, unknown> } = {}): Promise<number | null> {
   try {
     if ((d.side !== "call" && d.side !== "put") || !(num(d.wrong_if_level) > 0) || !(num(d.target_level) > 0) || !(spot > 0)) return null;
     if (planProblem(d as Decision, spot)) return null;                                              // a broken plan is not a rule's fault
     const ticker = String(d.ticker || "").toUpperCase();
     const have = (await db(`winston_shadows?day=eq.${day}&ticker=eq.${ticker}&side=eq.${d.side}&select=id&limit=1`)) || [];
     if (have.length) return null;                                                                   // one shadow per name and side per day
-    const r = await db("winston_shadows", { method: "POST", body: JSON.stringify({ day, created_at: new Date(nowMs()).toISOString(), status: "open", ticker, side: d.side, rule: String(rule).slice(0, 20), why: String(why || "").slice(0, 400), source: d.source || "own",
-      spot: round2(spot), wrong_if: num(d.wrong_if_level), target: num(d.target_level), plan: { thesis: String(d.thesis || "").slice(0, 600), cites: (d.cites || []).slice(0, 4), booked_at_min: marketClock().min } }) });
+    const r = await db("winston_shadows", { method: "POST", body: JSON.stringify({ day, created_at: new Date(o.createdMs ?? nowMs()).toISOString(), status: "open", ticker, side: d.side, rule: String(rule).slice(0, 20), why: String(why || "").slice(0, 400), source: d.source || "own",
+      spot: round2(spot), wrong_if: num(d.wrong_if_level), target: num(d.target_level), plan: { thesis: String(d.thesis || "").slice(0, 600), cites: (d.cites || []).slice(0, 4), booked_at_min: marketClock().min, ...(o.extra || {}) } }) });   // v5.9.13: created_at can be the moment the idea was armed or fired (the grader reads the bars from there)
     await wlog("shadow", { ticker, side: d.side, rule, id: r?.[0]?.id });
     return r?.[0]?.id ?? null;
   } catch (e) { await wlog("shadow_error", { msg: String((e as Error).message).slice(0, 160) }); return null; }
@@ -1763,7 +1763,8 @@ export function rebalanceExit(plan: { dir: "up" | "down"; wrong_if_level: number
 
 export type Armed = { day: string; ticker: string; side: "call" | "put"; source: string; thesis: string; trigger_level: number; wrong_if_level: number; target_level: number;
   time_exit_min?: number; cites: any[]; rule_ids?: string[]; armed_at: string;
-  mode?: "level" | "rebalance" | "retrace"; expires_at?: string | null; bias_level?: number | null; level_trade?: boolean };   // v5.5: A rebalance / B retrace
+  mode?: "level" | "rebalance" | "retrace"; expires_at?: string | null; bias_level?: number | null; level_trade?: boolean;   // v5.5: A rebalance / B retrace
+  spot?: number | null };   // v5.9.13: the price when it was armed (prices the practice record if it never trades)
 export function triggerState(a: { side: "call" | "put"; trigger_level: number; wrong_if_level: number }, bars: Bar[], now = nowMs()): "fire" | "drop" | "wait" {
   const done = completedBars(bars, 10, now).sort((x, y) => x.t - y.t);
   if (!done.length) return "wait";
@@ -1777,16 +1778,58 @@ export const needsTrigger = (d: { side: "call" | "put"; trigger_level?: number |
   num(d.trigger_level) > 0 && (d.side === "call" ? spot <= num(d.trigger_level) : spot >= num(d.trigger_level));
 async function getArmed(day: string): Promise<Armed[]> { try { const a = await getSetting("armed_ideas"); return (Array.isArray(a) ? a : []).filter((x: any) => x && x.day === day); } catch { return []; } }
 async function putArmed(list: Armed[]) { try { await putSetting("armed_ideas", list); } catch { /* best effort */ } }
+/* v5.9.13 (Ifoma, 25 Nov; build 28 Nov): COACH CALLS HE SET UP BUT NEVER TRADED get a practice record (a shadow, never money).
+   25 Nov SPY 702: armed 10:01, fired 10:21 with SPY already past the 699 target, so the plan check threw it out and nothing was booked.
+   27 Nov XOM: armed 9:51 waiting for a pullback that never came, and an idea still waiting at the close left no trace.
+   ARM_FIRED = it fired but was not taken (priced from the level he was waiting for, from the bar that fired).
+   ARM_MISSED = it never fired: dropped, expired or still waiting at the close (priced from the price when he armed it, from that moment).
+   Coach ideas only. A shadow never trades: it only scores what the call would have done (see gradeShadow). */
+export const ARM_SHADOW_RULES = ["ARM_FIRED", "ARM_MISSED"];
+export function armedShadowPricing(a: Armed, kind: "fired" | "missed", bars: Bar[], now = nowMs()): { spot: number; createdMs: number; priced_from: string }[] {
+  const out: { spot: number; createdMs: number; priced_from: string }[] = [];
+  const armedMs = Date.parse(a.armed_at), done = completedBars(bars || [], 10, now).sort((x, y) => x.t - y.t);
+  const atArm = num(a.spot) > 0 ? num(a.spot) : (done.filter((b) => b.t + 600e3 <= armedMs).pop()?.c ?? 0);   // older armed rows have no spot: the last close before he armed it
+  if (kind === "fired") {
+    const fireBar = done[done.length - 1];
+    if (num(a.trigger_level) > 0 && fireBar) out.push({ spot: num(a.trigger_level), createdMs: fireBar.t, priced_from: `the level he waited for (${num(a.trigger_level)})` });
+  }
+  // scored from the start of the 10-minute bar he armed it in, so the bar that ends the idea (a close through the wrong-if) is always counted
+  if (atArm > 0 && Number.isFinite(armedMs)) out.push({ spot: round2(atArm), createdMs: Math.floor(armedMs / 600e3) * 600e3, priced_from: `the price when he armed it (${round2(atArm)})` });
+  return out;
+}
+export async function shadowArmedCoach(day: string, a: Armed, kind: "fired" | "missed", why: string, bars: Bar[]): Promise<number | null> {
+  try {
+    if (!String(a.source || "").startsWith("coach:")) return null;
+    const d: Decision = { ticker: a.ticker, side: a.side, source: a.source, thesis: a.thesis, wrong_if_level: a.wrong_if_level, target_level: a.target_level, time_exit_min: a.time_exit_min, cites: a.cites, rule_ids: a.rule_ids, trigger_level: a.trigger_level };
+    for (const p of armedShadowPricing(a, kind, bars)) {
+      if (planProblem(d, p.spot)) continue;                                                       // the plan has to make sense at that price, or the score means nothing
+      return await bookShadow(day, d, p.spot, kind === "fired" ? "ARM_FIRED" : "ARM_MISSED", `${why} Priced from ${p.priced_from}.`,
+        { createdMs: p.createdMs, extra: { armed_at: a.armed_at, armed_mode: a.mode || "level", trigger: num(a.trigger_level) || null, priced_from: p.priced_from } });
+    }
+    await wlog("shadow_skip", { ticker: a.ticker, side: a.side, kind, why: "no price where the plan makes sense" });
+    return null;
+  } catch (e) { await wlog("shadow_error", { msg: String((e as Error).message).slice(0, 160) }).catch(() => {}); return null; }
+}
+// At the report: a coach idea still armed (it never fired by the close) gets its ARM_MISSED record. Run before scoreShadows.
+export async function shadowLeftoverArmed(day: string): Promise<number> {
+  const list = (await getArmed(day)).filter((a) => String(a.source || "").startsWith("coach:"));
+  if (!list.length) return 0;
+  let bars: Record<string, Bar[]> = {};
+  try { bars = await bars10(list.map((a) => a.ticker), day); } catch { /* priced from the armed price alone */ }
+  let n = 0;
+  for (const a of list) if (await shadowArmedCoach(day, a, "missed", `Coach call armed at ${fmtMin(etParts(new Date(Date.parse(a.armed_at))).min)} never triggered: ${armedWaitText(a)}. Still waiting at the close.`, bars[a.ticker] || [])) n++;
+  return n;
+}
 export function armedWaitText(a: { mode?: string; side: string; trigger_level: number; ticker: string; bias_level?: number | null }) {
   if (a.mode === "rebalance") return `waiting for the first rebalance on ${a.ticker}: a bounce, then a 10-minute close back ${a.side === "put" ? "down" : "up"} (day bias ${a.side === "put" ? "short below" : "long above"} ${a.bias_level ?? a.trigger_level})`;
   if (a.mode === "retrace") return `waiting for ${a.ticker} to ${a.side === "call" ? "retrace" : "rebalance"} to intraday VWAP (now ${a.trigger_level}) and close back ${a.side === "call" ? "up" : "down"} — 90 minutes`;
   return `waiting for a 10-minute close ${a.side === "call" ? "above" : "below"} ${a.trigger_level} on ${a.ticker}`;
 }
-async function armIdea(ctx: Ctx, d: Decision, coach: boolean, x: { mode?: "level" | "rebalance" | "retrace"; expires_at?: string | null; bias_level?: number | null; level_trade?: boolean } = {}) {
+async function armIdea(ctx: Ctx, d: Decision, coach: boolean, x: { mode?: "level" | "rebalance" | "retrace"; expires_at?: string | null; bias_level?: number | null; level_trade?: boolean; spot?: number } = {}) {
   const list = await getArmed(ctx.day);
   const a: Armed = { day: ctx.day, ticker: d.ticker, side: d.side, source: coach ? d.source : "own", thesis: String(d.thesis || "").slice(0, 1500), trigger_level: num(d.trigger_level),
     wrong_if_level: d.wrong_if_level, target_level: d.target_level, time_exit_min: d.time_exit_min, cites: d.cites || [], rule_ids: d.rule_ids || [], armed_at: new Date(nowMs()).toISOString(),
-    mode: x.mode || "level", expires_at: x.expires_at ?? null, bias_level: x.bias_level ?? null, level_trade: x.level_trade !== false };
+    mode: x.mode || "level", expires_at: x.expires_at ?? null, bias_level: x.bias_level ?? null, level_trade: x.level_trade !== false, spot: num(x.spot) > 0 ? round2(num(x.spot)) : null };
   if (list.some((y) => y.ticker === d.ticker && y.side === d.side)) { await recordIdea(ctx.day, d, "passed", `Armed already: ${armedWaitText(list.find((y) => y.ticker === d.ticker && y.side === d.side)!)}`); return; }
   list.push(a);
   await putArmed(list);
@@ -1809,17 +1852,20 @@ export async function checkArmed(ctx: Ctx, blackoutFn: () => Promise<string | nu
   if (!ctx.dctx) { try { const cch = await getSetting("daily_ctx"); if (cch?.day === ctx.day && cch.by) dc = cch.by; } catch { /* none */ } }
   for (const a of list) {
     const d: Decision = { ticker: a.ticker, side: a.side, source: a.source, thesis: a.thesis, wrong_if_level: a.wrong_if_level, target_level: a.target_level, time_exit_min: a.time_exit_min, cites: a.cites, rule_ids: a.rule_ids, trigger_level: a.trigger_level };
-    if (ctx.min > num(ctx.cfg.last_entry_min) && !lateLook(ctx.cfg, ctx.min)) { await recordIdea(ctx.day, d, "passed", "Armed idea dropped: past the last-entry time, never triggered"); out.dropped.push(a.ticker); continue; }
-    if (ctx.lim.locked) { await recordIdea(ctx.day, d, "blocked", "Armed idea dropped: " + ctx.lim.locked.why); out.dropped.push(a.ticker); continue; }
     const tb = bars[a.ticker];
+    if (ctx.min > num(ctx.cfg.last_entry_min) && !lateLook(ctx.cfg, ctx.min)) { const why = "Armed idea dropped: past the last-entry time, never triggered"; await recordIdea(ctx.day, d, "passed", why); await shadowArmedCoach(ctx.day, a, "missed", why + ".", tb || []); out.dropped.push(a.ticker); continue; }
+    if (ctx.lim.locked) { const why = "Armed idea dropped: " + ctx.lim.locked.why; await recordIdea(ctx.day, d, "blocked", why); await shadowArmedCoach(ctx.day, a, "missed", why + ".", tb || []); out.dropped.push(a.ticker); continue; }
     const mode = a.mode || "level", dir = a.side === "call" ? "up" : "down";
     if (mode === "retrace" && a.expires_at && nowMs() >= Date.parse(a.expires_at)) {   // v5.5 B: 90 minutes and it never came back
       const why = "Armed retrace expired after 90 minutes: price never came back to VWAP and resumed";
-      await recordIdea(ctx.day, d, "passed", why); await bookShadow(ctx.day, d, quotes[a.ticker]?.spot || (tb ? tb[tb.length - 1].c : 0), "B90", why); out.dropped.push(a.ticker); continue;
+      await recordIdea(ctx.day, d, "passed", why);
+      if (!(await bookShadow(ctx.day, d, quotes[a.ticker]?.spot || (tb ? tb[tb.length - 1].c : 0), "B90", why))) await shadowArmedCoach(ctx.day, a, "missed", why + ".", tb || []);   // v5.9.13: price ran past the plan = no B90 row; keep a record from the armed price
+      out.dropped.push(a.ticker); continue;
     }
     if (mode === "rebalance" && !biasAgrees(ctx.bias?.[a.ticker], a.side)) {        // v5.5 A: the level was reclaimed
       const b = ctx.bias?.[a.ticker];
-      await recordIdea(ctx.day, d, "passed", `Armed rebalance dropped: the day bias ended${b?.cleared_close ? ` (a 10-minute close ${b.cleared_close} back through ${b.level})` : ""}`); out.dropped.push(a.ticker); continue;
+      const why = `Armed rebalance dropped: the day bias ended${b?.cleared_close ? ` (a 10-minute close ${b.cleared_close} back through ${b.level})` : ""}`;
+      await recordIdea(ctx.day, d, "passed", why); await shadowArmedCoach(ctx.day, a, "missed", why + ".", tb || []); out.dropped.push(a.ticker); continue;
     }
     let st = tb ? triggerState(a, tb) : "wait";
     if (mode !== "level" && st !== "drop") {
@@ -1827,13 +1873,14 @@ export async function checkArmed(ctx: Ctx, blackoutFn: () => Promise<string | nu
       const fire = tb ? (mode === "rebalance" ? rebalanceFire(dir, tb, ctx.day, Date.parse(a.armed_at), atr > 0 ? 0.3 * atr : 0) : retraceFire(dir, tb, ctx.day, Date.parse(a.armed_at))) : false;
       st = fire ? "fire" : "wait";
     }
-    if (st === "drop") { await recordIdea(ctx.day, d, "passed", `Armed idea dropped: wrong-if ${a.wrong_if_level} hit before the ${mode === "level" ? "trigger " + a.trigger_level : mode}`); out.dropped.push(a.ticker); continue; }
+    if (st === "drop") { const why = `Armed idea dropped: wrong-if ${a.wrong_if_level} hit before the ${mode === "level" ? "trigger " + a.trigger_level : mode}`; await recordIdea(ctx.day, d, "passed", why); await shadowArmedCoach(ctx.day, a, "missed", why + ".", tb || []); out.dropped.push(a.ticker); continue; }
     if (st === "wait") { keep.push(a); out.waiting++; continue; }
     const spot = quotes[a.ticker]?.spot || tb![tb!.length - 1].c;
     if (blackout === undefined) { try { blackout = await blackoutFn(); } catch { blackout = null; } }
     ctx.trends = { ...(ctx.trends || {}), [a.ticker]: ctx.trends?.[a.ticker] ?? trendRead(dc[a.ticker], tb || [], spot) };
     const how = mode === "rebalance" ? `the first rebalance with the day bias (${a.bias_level ?? ""})` : mode === "retrace" ? "the retrace to intraday VWAP that resumed" : `a 10-minute close ${a.side === "call" ? "above" : "below"} ${a.trigger_level}`;
     const r = await tryOpen(ctx, { ...d, trigger_level: mode === "level" ? d.trigger_level : null, thesis: `[armed ${a.armed_at.slice(11, 16)}Z, triggered by ${how}] ` + a.thesis }, spot, a.source.startsWith("coach:"), blackout, { levelTrade: a.level_trade !== false });
+    if (!r.opened) await shadowArmedCoach(ctx.day, a, "fired", `Coach call fired by ${how} but was not taken: ${r.why}.`, tb || []);   // v5.9.13: one shadow per name and side, so a gate's own shadow stays the record
     out.fired.push(a.ticker + (r.opened ? "" : " (not filled: " + r.why + ")"));
   }
   await putArmed(keep);
@@ -2060,13 +2107,13 @@ ${lateLook(cfg, c.min) ? `LATE LOOK (v5.9.7): the entry window closed at ${fmtMi
         if (bOk) {                                                                     // v5.5 A: with the day bias: no chase line, wait for the first rebalance
           const bad = planProblem(d, spot);
           if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); results.push({ t: d.ticker, ok: false, why: bad }); continue; }
-          await armIdea(ctx, { ...d, trigger_level: bz!.level }, coach, { mode: "rebalance", bias_level: bz!.level, level_trade: !bare }); results.push({ t: d.ticker, ok: false, why: "armed rebalance" }); continue;
+          await armIdea(ctx, { ...d, trigger_level: bz!.level }, coach, { mode: "rebalance", bias_level: bz!.level, level_trade: !bare, spot }); results.push({ t: d.ticker, ok: false, why: "armed rebalance" }); continue;
         }
         const cp = coachLevelProblem(d, spot, num(cfg.coach_chase_pct));
         if (cp && cp.rule === "C1" && bare && num(ctx.vwaps?.[d.ticker]) > 0) {     // v5.5 B: armed as a retrace to intraday VWAP, 90 minutes
           const bad = planProblem(d, spot);
           if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); results.push({ t: d.ticker, ok: false, why: bad }); continue; }
-          await armIdea(ctx, { ...d, trigger_level: round2(num(ctx.vwaps![d.ticker])) }, coach, { mode: "retrace", expires_at: new Date(nowMs() + 90 * 60e3).toISOString(), level_trade: false });
+          await armIdea(ctx, { ...d, trigger_level: round2(num(ctx.vwaps![d.ticker])) }, coach, { mode: "retrace", expires_at: new Date(nowMs() + 90 * 60e3).toISOString(), level_trade: false, spot });
           results.push({ t: d.ticker, ok: false, why: "armed retrace" }); continue;
         }
         if (cp) { await recordIdea(day, d, "passed", cp.why); await bookShadow(day, d, spot, cp.rule, cp.why); results.push({ t: d.ticker, ok: false, why: cp.why }); continue; }
@@ -2074,19 +2121,19 @@ ${lateLook(cfg, c.min) ? `LATE LOOK (v5.9.7): the entry window closed at ${fmtMi
         if (st !== "fire") {
           const bad = planProblem(d, spot);
           if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); results.push({ t: d.ticker, ok: false, why: bad }); continue; }
-          await armIdea(ctx, d, coach); results.push({ t: d.ticker, ok: false, why: "armed" }); continue;
+          await armIdea(ctx, d, coach, { spot }); results.push({ t: d.ticker, ok: false, why: "armed" }); continue;
         }
       }
       if (!coach && bOk && !(num(d.trigger_level) > 0)) {                            // v5.5 A: an own idea with the day bias waits for the first rebalance too
         const bad = planProblem(d, spot);
         if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); results.push({ t: d.ticker, ok: false, why: bad }); continue; }
-        await armIdea(ctx, { ...d, trigger_level: bz!.level }, false, { mode: "rebalance", bias_level: bz!.level, level_trade: false }); results.push({ t: d.ticker, ok: false, why: "armed rebalance" }); continue;
+        await armIdea(ctx, { ...d, trigger_level: bz!.level }, false, { mode: "rebalance", bias_level: bz!.level, level_trade: false, spot }); results.push({ t: d.ticker, ok: false, why: "armed rebalance" }); continue;
       }
       // v4.3 ARMED: a named trigger that has not been closed through yet means wait, not fill.
       if (needsTrigger(d, spot) && triggerState({ side: d.side, trigger_level: num(d.trigger_level), wrong_if_level: d.wrong_if_level }, bars[d.ticker] || []) !== "fire") {
         const bad = planProblem(d, spot);
         if (bad) { await recordIdea(day, d, "passed", "Plan rejected: " + bad); results.push({ t: d.ticker, ok: false, why: bad }); continue; }
-        await armIdea(ctx, d, coach); results.push({ t: d.ticker, ok: false, why: "armed" }); continue;
+        await armIdea(ctx, d, coach, { spot }); results.push({ t: d.ticker, ok: false, why: "armed" }); continue;
       }
       const r = await tryOpen(ctx, d, spot, coach, blackout);
       results.push({ t: d.ticker, ok: r.opened, why: r.why });
@@ -2228,7 +2275,17 @@ export async function flatten(opts: { force?: boolean } = {}) {
   } finally { await freeLock("tick_lock"); }
 }
 
+export function coachMissedList(rows: any[]) {
+  const word = (x: any) => x.status === "win" ? "reached the target" : x.status === "loss" ? "hit the wrong-if" : x.status === "time" ? "ran out of time" : "not scored yet";
+  return (rows || []).filter((x) => ARM_SHADOW_RULES.includes(String(x.rule))).map((x) => {
+    const est = x.pnl_est == null || x.status === "open" ? "" : `, est ${num(x.pnl_est) >= 0 ? "+" : "-"}$${Math.abs(num(x.pnl_est))} on the stock`;
+    const how = x.rule === "ARM_FIRED" ? "fired but not taken" : "never triggered";
+    return { id: x.id, ticker: x.ticker, side: x.side, rule: x.rule, status: x.status, from: num(x.spot), pnl_est: x.pnl_est ?? null, r: x.r ?? null, why: x.why,
+      line: `${x.ticker} ${x.side} (${how}, from ${num(x.spot)}): ${word(x)}${est}` };
+  });
+}
 export async function buildReport(day: string, cfg: any) {
+  try { await shadowLeftoverArmed(day); } catch { /* the report still builds */ }   // v5.9.13: coach calls still armed at the close get their practice record first
   try { await scoreShadows(day, marketClock().closeMin); } catch { /* the report still builds */ }   // v4.5
   try { await scoreAfterExits(day, marketClock().closeMin); } catch (e) { await wlog("after_error", { msg: String((e as Error).message).slice(0, 160) }).catch(() => {}); }   // v4.8
   const trades: any[] = (await db("winston_trades?select=*&order=id.asc")) || [];
@@ -2258,7 +2315,12 @@ export async function buildReport(day: string, cfg: any) {
   let lateRep: any = null;   // v5.9.7: the afternoon's shadows next to the morning's
   try { lateRep = lateTally((await db(`winston_shadows?day=eq.${day}&select=*&order=id.asc&limit=100`)) || [], num(cfg.last_entry_min)); } catch { /* the ledger is best effort */ }
   if (lateRep && lateRep.late.n) lines.push(`Afternoon shadows (booked after ${fmtMin(num(cfg.last_entry_min))}, never traded): ${lateRep.late.n}, ${lateRep.late.wins} to target, ${lateRep.late.losses} to the wrong-if, ${lateRep.late.r >= 0 ? "+" : ""}${lateRep.late.r}R, est ${lateRep.late.est >= 0 ? "+" : "-"}$${Math.abs(lateRep.late.est)} on the stock. Morning shadows: ${lateRep.morning.n}, ${lateRep.morning.r >= 0 ? "+" : ""}${lateRep.morning.r}R.`);
-  const report = { day, built_at: new Date(nowMs()).toISOString(), summary: lines, taken, passed, day_stats: dayStats, all_time: stats, balance: eqAll.equity, start_balance: row.start_balance ?? cfg.paper_balance,
+  let coachMissed: any[] = [];   // v5.9.13: the coach calls he set up but never traded, and what each would have done
+  try {
+    coachMissed = coachMissedList((await db(`winston_shadows?day=eq.${day}&select=*&order=id.asc&limit=100`)) || []);
+    if (coachMissed.length) lines.push(`Coach calls set up but never traded (practice records, no money): ${coachMissed.map((x) => x.line).join("; ")}.`);
+  } catch { /* the ledger is best effort */ }
+  const report = { day, built_at: new Date(nowMs()).toISOString(), summary: lines, taken, passed, coach_missed: coachMissed, day_stats: dayStats, all_time: stats, balance: eqAll.equity, start_balance: row.start_balance ?? cfg.paper_balance,
     ai: row.ai || null, routine_done: !!row.routine, sentiment_done: !!row.sentiment, kill: row.kill || null, coach_posts_seen: ideas.filter((i) => String(i.source).startsWith("coach:")).length,
     passed_by_reason: passedBy, stamp_stats: stampStats, after_exits: { today: afterTally(today), all_time: afterTally(trades) },   // v4.8: was the early exit right?
     mode: isDataMode(cfg) ? "data" : "strict", scanner: await scanReport(day).catch(() => null), shadow: await shadowState().catch(() => null), late_shadow: lateRep,   // v4.4 shadow scanner score; v4.5 rule-cost ledger; v5.9.7 afternoon vs morning shadows

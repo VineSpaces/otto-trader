@@ -2108,3 +2108,101 @@ Deno.test("v5.9.7 the late look is a setting and the report groups the afternoon
   const t = X.lateTally([{ status: "win", r: 1.5, pnl_est: 60, plan: { booked_at_min: 700 } }, { status: "loss", r: -1, pnl_est: -40, plan: { booked_at_min: 720 } }, { status: "time", r: 0.2, pnl_est: 8, plan: { booked_at_min: 575 } }], 660);
   eq([t.late.n, t.late.wins, t.late.losses, t.late.r, t.late.est, t.morning.n], [2, 1, 1, 0.5, 20, 1], "afternoon vs morning: " + JSON.stringify(t));
 });
+
+/* =========================== v5.9.13: coach calls he set up but never traded get a practice record =========================== */
+const armedNow = () => TABLES.winston_settings.find((s) => s.key === "armed_ideas")?.value || [];
+const noOrderTools = () => assert(!W.calls.some((c) => /place_|cancel_|order/i.test(c.tool)), "no order tool touched: " + JSON.stringify(W.calls.map((c) => c.tool)));
+Deno.test("v5.9.13 replay 25 Nov SPY 702: 9:56 post, armed 10:01, fired 10:21 past the target -> a shadow from 702, no trade, no order tool; the report scores it a win", async () => {
+  seed(); setNow("2026-11-25T15:01:00Z");   // 10:01 AM ET (EST)
+  W.spot = { SPY: 703.2 }; W.prev = { SPY: 704 }; W.calls.length = 0; W.ai.n = 0; W.opts = {};
+  W.bars = { SPY: [barRow("2026-11-25T14:30:00Z", 704, 705, 703, 703.6), barRow("2026-11-25T14:40:00Z", 703.6, 704.2, 702.6, 703.0), barRow("2026-11-25T14:50:00Z", 703.0, 703.8, 702.5, 703.2)] };
+  TABLES.otto_jason.push({ id: 1106, day: "2026-11-25", posted_label: "9:56 AM", kind: "call", ticker: "SPY", direction: "short", level: 702, words: "702 short area", late: false });
+  aiScript = () => ({ decisions: [{ ticker: "SPY", side: "put", source: "coach:1106", thesis: "Coach: 702 short area", wrong_if_level: 705.8, target_level: 699, trigger_level: 702, time_exit_min: 90, cites: [{ type: "coach_post", ref: "1106" }] }], passes: [] });
+  await X.tick();
+  eq(TABLES.winston_trades.length, 0, "armed, not filled");
+  eq([armedNow().length, armedNow()[0]?.spot, armedNow()[0]?.trigger_level], [1, 703.2, 702], "armed at 10:01 with the price it was armed at");
+  // 10:21: the 10:00 bar held, the 10:10 bar closed 699.4 (low 698.6). SPY 698.81 is already past the 699 target, so the plan check throws the fill out.
+  setNow("2026-11-25T15:21:00Z"); W.spot.SPY = 698.81; aiScript = () => ({ decisions: [], passes: [] });
+  W.bars.SPY.push(barRow("2026-11-25T15:00:00Z", 703.2, 703.5, 702.1, 702.4), barRow("2026-11-25T15:10:00Z", 702.4, 702.6, 698.6, 699.4));
+  const r: any = await X.tick();
+  eq(TABLES.winston_trades.length, 0, "no trade row: " + JSON.stringify(r.armed));
+  assert(TABLES.winston_ideas.some((i) => /Plan rejected/.test(i.reason) && i.ticker === "SPY"), "the fill was thrown out by the plan check, as on 25 Nov");
+  eq(TABLES.winston_shadows.length, 1, "one practice record");
+  const sh = TABLES.winston_shadows[0];
+  eq([sh.ticker, sh.side, sh.rule, sh.spot, sh.wrong_if, sh.target, sh.source, sh.created_at], ["SPY", "put", "ARM_FIRED", 702, 705.8, 699, "coach:1106", "2026-11-25T15:10:00.000Z"], "priced from 702, from the bar that fired");
+  eq([sh.plan.armed_at, sh.plan.armed_mode, sh.plan.trigger], ["2026-11-25T15:01:00.000Z", "level", 702], "the armed details ride along");
+  assert(/fired by a 10-minute close below 702 but was not taken/.test(sh.why), "why: " + sh.why);
+  noOrderTools();
+  setNow("2026-11-25T21:10:00Z"); const rep: any = (await X.reportJob({ force: true })).report;   // 4:10 PM ET
+  const s2 = TABLES.winston_shadows[0];
+  eq([s2.status, s2.exit_under, s2.pnl_est], ["win", 699, 120], "reached 699 on the fire bar: (702 - 699) x 0.40 x 100 = $120 on the stock");
+  eq(rep.coach_missed.map((x: any) => x.line), ["SPY put (fired but not taken, from 702): reached the target, est +$120 on the stock"], "the report lists it");
+  assert(rep.summary.some((l: string) => /^Coach calls set up but never traded \(practice records, no money\): SPY put/.test(l)), "and says it in the summary");
+  eq(TABLES.winston_trades.length, 0, "still no trade"); noOrderTools();
+});
+const leftover = (day: string, armedIso: string, extra: any = {}) => ({ day, ticker: "XOM", side: "call", source: "coach:7", thesis: "Coach: XOM long, wait for a pullback", trigger_level: 121, wrong_if_level: 118.5, target_level: 124,
+  time_exit_min: 120, cites: [{ type: "coach_post", ref: "7" }], rule_ids: [], armed_at: armedIso, mode: "rebalance", expires_at: null, bias_level: 121, level_trade: true, spot: 120.4, ...extra });
+const quietXom = (day: string, fromHour: number, n: number) => Array.from({ length: n }, (_, i) => { const t = new RealDate(RealDate.parse(`${day}T${String(fromHour).padStart(2, "0")}:50:00Z`) + i * 600e3).toISOString(); return barRow(t, 120.4, 121.2, 119.6, 120.6 + (i % 3) * 0.1); });
+Deno.test("v5.9.13 half day 27 Nov: a coach call still armed at the close gets an ARM_MISSED record, scored to the half-day close (12:50), not 3:50", async () => {
+  seed(); setNow("2026-11-27T18:10:00Z");   // 1:10 PM ET, after the 1 PM close
+  W.calls.length = 0; W.spot = { XOM: 120.7 }; W.prev = { XOM: 120 };
+  W.bars = { XOM: quietXom("2026-11-27", 14, 19) };   // 9:50 AM .. 12:50 PM, never 124, never a close under 118.5
+  TABLES.winston_settings.push({ key: "armed_ideas", value: [leftover("2026-11-27", "2026-11-27T14:51:00.000Z"), leftover("2026-11-27", "2026-11-27T14:51:00.000Z", { ticker: "CVX", source: "own" })] });
+  const rep: any = (await X.reportJob({ force: true })).report;
+  eq(TABLES.winston_shadows.length, 1, "one record, for the coach call only (the own idea gets none): " + JSON.stringify(TABLES.winston_shadows.map((x) => x.ticker)));
+  const sh = TABLES.winston_shadows[0];
+  eq([sh.ticker, sh.rule, sh.spot, sh.created_at, sh.plan.armed_mode], ["XOM", "ARM_MISSED", 120.4, "2026-11-27T14:50:00.000Z", "rebalance"], "priced from the price he armed it at, from that moment");
+  assert(/^Coach call armed at 9:51 .*never triggered: waiting for the first rebalance on XOM.*Still waiting at the close\. Priced from the price when he armed it \(120\.4\)\.$/.test(sh.why), "why: " + sh.why);
+  eq(sh.status, "time", "the half day ends the clock at 12:50, so it is scored");
+  eq(sh.exit_at, "2026-11-27T18:00:00.000Z", "exit at the close of the last bar");
+  eq(rep.coach_missed.length, 1, "the report lists it"); assert(/^XOM call \(never triggered, from 120\.4\): ran out of time, est [+-]\$/.test(rep.coach_missed[0].line), rep.coach_missed[0].line);
+  noOrderTools();
+  // a normal day at the same time of day: the clock runs to 3:50 PM, so at 1:10 PM nothing is scored yet
+  seed(); setNow("2026-11-24T18:10:00Z"); W.bars = { XOM: quietXom("2026-11-24", 14, 19) };
+  TABLES.winston_settings.push({ key: "armed_ideas", value: [leftover("2026-11-24", "2026-11-24T14:51:00.000Z")] });
+  const rep2: any = (await X.reportJob({ force: true })).report;
+  eq(TABLES.winston_shadows[0]?.status, "open", "a full day is not scored at 1:10 PM");
+  eq(rep2.coach_missed[0]?.line, "XOM call (never triggered, from 120.4): not scored yet", "the line says so");
+  // a second report run books nothing twice
+  await X.reportJob({ force: true }); eq(TABLES.winston_shadows.length, 1, "one record per name and side per day");
+});
+Deno.test("v5.9.13 a coach call dropped when the wrong-if closes first gets ARM_MISSED; an own idea dropped the same way gets nothing", async () => {
+  for (const coach of [true, false]) {
+    seed(); setNow("2026-10-14T14:11:00Z"); await setupCall();
+    aiScript = () => ({ decisions: [{ ticker: "NVDA", side: "call", source: coach ? "coach:1" : "own", thesis: "reclaim 201", wrong_if_level: 198, target_level: 204, trigger_level: 201, cites: [{ type: coach ? "coach_post" : "chart", ref: "1" }] }], passes: coach ? [] : [passCoach1] });
+    await X.tick(); eq([TABLES.winston_trades.length, armedNow().length], [0, 1], "armed");
+    setNow("2026-10-14T14:21:00Z"); W.bars.NVDA.push(barRow("2026-10-14T14:10:00Z", 200, 200.2, 197.2, 197.5)); aiScript = () => ({ decisions: [], passes: [] });   // the 10:10 bar, the one he armed it in, closes under 198
+    await X.tick();
+    assert(TABLES.winston_ideas.some((i) => /Armed idea dropped: wrong-if 198 hit before the trigger 201/.test(i.reason)), "dropped as before");
+    eq(TABLES.winston_trades.length, 0, "never filled");
+    if (coach) {
+      const sh = TABLES.winston_shadows[0];
+      eq([TABLES.winston_shadows.length, sh?.rule, sh?.spot, sh?.created_at], [1, "ARM_MISSED", 200, "2026-10-14T14:10:00.000Z"], "practice record from the armed price, scored from the bar he armed it in");
+      setNow("2026-10-14T20:20:00Z"); await X.reportJob({ force: true });
+      eq([TABLES.winston_shadows[0].status, TABLES.winston_shadows[0].pnl_est], ["loss", -100], "the close at 197.5 under 198 is the loss: (197.5 - 200) x 0.40 x 100");
+    } else eq(TABLES.winston_shadows.length, 0, "own ideas: no ARM record");
+    noOrderTools();
+  }
+});
+Deno.test("v5.9.13 pricing: fired tries the level first, then the armed price; old rows without a price use the last close before arming; a plan that makes no sense at any price books nothing", async () => {
+  const a: any = leftover("2026-10-14", "2026-10-14T14:11:00.000Z", { ticker: "NVDA", side: "call", trigger_level: 201, wrong_if_level: 198, target_level: 204, spot: 200, mode: "level" });
+  const bars = [{ t: RealDate.parse("2026-10-14T13:50:00Z"), o: 1, h: 1, l: 1, c: 199.7 }, { t: RealDate.parse("2026-10-14T14:10:00Z"), o: 1, h: 1, l: 1, c: 201.4 }];
+  const now = RealDate.parse("2026-10-14T14:21:00Z");
+  eq(X.armedShadowPricing(a, "fired", bars as any, now).map((p: any) => [p.spot, new RealDate(p.createdMs).toISOString()]), [[201, "2026-10-14T14:10:00.000Z"], [200, "2026-10-14T14:10:00.000Z"]], "fired: the level from the fire bar, then the armed price from the bar he armed it in");
+  eq(X.armedShadowPricing({ ...a, spot: null }, "missed", bars as any, now).map((p: any) => p.spot), [199.7], "no stored price: the last close before he armed it");
+  eq(X.armedShadowPricing({ ...a, spot: null }, "missed", [], now), [], "nothing to price from");
+  seed(); setNow("2026-10-14T14:21:00Z");
+  eq(await X.shadowArmedCoach("2026-10-14", { ...a, source: "coach:1", spot: 205 }, "missed", "x.", []), null, "205 is past the 204 target: no record");
+  assert(TABLES.winston_log.some((l: any) => l.kind === "shadow_skip" || JSON.stringify(l).includes("shadow_skip")), "the skip is logged");
+  eq(await X.shadowArmedCoach("2026-10-14", { ...a, source: "own" }, "missed", "x.", []), null, "own: never");
+  eq(TABLES.winston_shadows.length, 0, "nothing booked");
+});
+Deno.test("v5.9.13 the report list words each result plainly and leaves other shadows out", () => {
+  const L = X.coachMissedList([
+    { id: 1, ticker: "SPY", side: "put", rule: "ARM_FIRED", status: "win", spot: 702, pnl_est: 120 },
+    { id: 2, ticker: "XOM", side: "call", rule: "ARM_MISSED", status: "loss", spot: 120.4, pnl_est: -48 },
+    { id: 3, ticker: "NVDA", side: "call", rule: "C2", status: "win", spot: 200, pnl_est: 50 },
+    { id: 4, ticker: "MU", side: "call", rule: "ARM_MISSED", status: "open", spot: 90, pnl_est: null },
+  ]);
+  eq(L.map((x: any) => x.line), ["SPY put (fired but not taken, from 702): reached the target, est +$120 on the stock", "XOM call (never triggered, from 120.4): hit the wrong-if, est -$48 on the stock", "MU call (never triggered, from 90): not scored yet"], "lines");
+});
