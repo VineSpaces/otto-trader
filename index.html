@@ -1054,6 +1054,7 @@ svg.nc-svg{width:100%;height:auto;display:block}
 .win43-note .tm{color:var(--ink-3);font-family:var(--mono);font-size:11.5px}.win43-note .tk{font-weight:700}.win43-note .rs{color:var(--ink-2);display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .win43-note .st{font-size:10.5px;font-weight:700;padding:2px 7px;border-radius:5px;background:#1E242E;color:var(--ink-3);white-space:nowrap}.win43-note .st.coach{background:rgba(245,196,81,.14);color:var(--gold,#F5C451)}
 .win43-li{display:flex;align-items:center;gap:10px;padding:9px 0;border-top:1px solid #1C212B;cursor:pointer}.win43-li:first-of-type{border-top:0}.win43-li:hover .t b{color:var(--gold,#F5C451)}
+.win43-pr{display:flex;align-items:center;gap:8px;font-size:12px;margin-top:5px}.win43-pr .tg{font-weight:700;font-size:10px;letter-spacing:.06em;border-radius:5px;padding:2px 6px;min-width:38px;text-align:center}.win43-pr .tg.pa{border:1px solid #646C78;color:#C8CED6}.win43-pr .tg.re{background:var(--gold,#F5C451);color:#0B0C0E}.win43-pr .v{flex:1;min-width:0;font-family:var(--mono);color:#C8CED6}.win43-pr .v.re{color:var(--ink)}.win43-pr .v.note{font-family:var(--body);color:var(--ink-2)}.win43-pr b{font:700 12.5px var(--mono)}   /* v5.9.13: PAPER and REAL lines */
 .win43-li .t{flex:1;min-width:0}.win43-li .t b{display:block}.win43-li .t span{font-size:11.5px;color:var(--ink-3)}.win43-li .why{font-size:11.5px;color:#FFC27A;margin-top:1px}.win43-li .p{font:700 14px var(--mono);min-width:54px;text-align:right}
 .win43-sc{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-top:8px}.win43-sc div{background:#0E1117;border:1px solid var(--rule);border-radius:10px;padding:8px;text-align:center}.win43-sc .n{font:700 19px var(--mono)}.win43-sc .l{font-size:10.5px;color:var(--ink-3)}
 .win43-tl{display:grid;grid-template-columns:repeat(8,1fr);gap:6px;margin:8px 0 14px}.win43-tl div{background:#0E1117;border:1px solid var(--rule);border-radius:10px;padding:8px;position:relative;font-size:12px}.win43-tl div b{display:block;font-family:var(--mono);color:var(--gold,#F5C451);font-size:12.5px}.win43-tl div span{font-size:11.5px;color:var(--ink-2)}
@@ -2775,7 +2776,7 @@ $("#rCopy").addEventListener("click",async()=>{try{await navigator.clipboard.wri
      major  the app works differently enough that Josh would notice
      minor  a new feature or tab
      patch  fixes, copy, corpus wiring */
-const BUILD="5.9.12";
+const BUILD="5.9.13";
 // v5.7.1 (9 Nov): the brain has three settings — label + the next one in the cycle. Server: winApi("config_set",{model}) accepts opus | sonnet55 | sonnet.
 const WIN_BRAIN={opus:"Opus 5.5",sonnet55:"Sonnet 5.5",sonnet:"Sonnet 4.6"},WIN_BRAIN_NEXT={opus:"sonnet55",sonnet55:"sonnet",sonnet:"opus"};
 function winBrainLabel(m){return WIN_BRAIN[m]||WIN_BRAIN.opus}
@@ -4746,6 +4747,24 @@ function winCloseBtn(t,bid){const id=String(t.id),c=WIN.cx[id],lv=(t.plan||{}).l
   if(c&&c.step==="confirm"&&Date.now()-c.at<5000)return `<div class="win-cx"><button class="wcx-yes" data-wcx="yes" data-wid="${esc(id)}">Yes, close it now</button><button class="wcx-no" data-wcx="no" data-wid="${esc(id)}">Cancel</button><span class="mut">${real?`Sells the ${n} real contract${n>1?"s":""}${bid!=null?` at about $${(+bid).toFixed(2)}`:""}.`:"Paper only. Nothing goes to Robinhood."}</span></div>`;
   const err=c&&c.step==="err"?`<div class="tr-msg bad" style="width:100%"><b>Not closed.</b> ${esc(c.msg||"")}</div>`:"";
   return `<div class="win-cx">${err}<button class="wcx-b" data-wcx="start" data-wid="${esc(id)}">Close this trade</button></div>`}
+/* v5.9.13 (Ifoma, 28 Nov: "keep it simple and clean"): every trade row shows PAPER (Winston's book) and, when the trade went to Robinhood, REAL.
+   Real numbers come only from plan.live (fill, exit_fill, pnl, or pnl_live on a trade closed by hand). Nothing is guessed: an unknown price or result says so in words.
+   No REAL line when it only rehearsed (dry / off). Pure: tested in v5913_test.ts. */
+function winPR(t){const n=v=>{const x=+v;return v!=null&&v!==""&&isFinite(x)?x:null},o=t.status==="open",lv=(t.plan||{}).live||null;
+  const paper={qty:+t.qty||1,inP:n(t.entry_fill)??n(t.entry_ask),outP:o?null:n(t.exit_fill),pnl:o?null:n(t.pnl_realistic),open:o};
+  if(!lv||lv.mode!=="on")return {paper,real:null};
+  const qty=+(lv.ticket&&lv.ticket.qty)||+lv.live_qty||1;
+  if(lv.refused)return {paper,real:{kind:"refused",note:"Not sent to Robinhood: "+String(lv.refused)+"."}};
+  if(!lv.entry_order_id)return {paper,real:{kind:"none",note:o?"Real order not placed yet.":(lv.error?"No real order: it did not go through.":"No real order.")}};
+  if(!lv.filled)return {paper,real:{kind:"unfilled",note:o?"Buy order sent. Fill not known yet.":"Buy order never filled. No real money in this trade."}};
+  const inP=n(lv.fill),outP=n(lv.exit_fill),pnl=n(lv.pnl)??n(lv.pnl_live),closed=outP!=null||!!lv.stop_filled;
+  return {paper,real:{kind:"filled",qty,inP,outP,pnl:closed?pnl:null,open:!closed,note:inP==null?"Filled. Fill price not known yet.":closed&&pnl==null?"result not on file":null}}}
+function winPRHtml(t){const r=winPR(t),P=r.paper,$=v=>v==null?"?":"$"+(+v).toFixed(2),ct=q=>q+" contract"+(q>1?"s":""),cls=v=>v>0?"up":v<0?"dn":"";
+  const row=(tag,re,txt,pnl,note)=>`<div class="win43-pr"><span class="tg ${re?"re":"pa"}">${tag}</span><span class="v${re?" re":""}">${esc(txt)}</span>${pnl!=null?`<b class="${cls(pnl)}">${wm(pnl)}</b>`:note?`<span class="mut" style="font-size:11.5px">${esc(note)}</span>`:`<span class="mut">—</span>`}</div>`;
+  let h=row("PAPER",false,P.open||P.outP==null?`${ct(P.qty)} · in at ${$(P.inP)}`:`${ct(P.qty)} · ${$(P.inP)} → ${$(P.outP)}`,P.pnl,null);
+  const R=r.real;if(!R)return h;
+  if(R.kind!=="filled"||R.inP==null)return h+`<div class="win43-pr"><span class="tg re">REAL</span><span class="v note">${esc(R.note)}</span></div>`;
+  return h+row("REAL",true,R.open?`${ct(R.qty)} · in at ${$(R.inP)}`:`${ct(R.qty)} · ${$(R.inP)} → ${$(R.outP)}`,R.pnl,R.note)}
 function winToday(j){
   const td=j.today||{},day=j.clock&&j.clock.day,lim=j.limits||{};
   const all=(j.trades||[]),tradesToday=all.filter(t=>t.day===day),open=tradesToday.filter(t=>t.status==="open");
@@ -4773,9 +4792,8 @@ function winToday(j){
     :`<div class="win-banner"><div class="win-big mut">Not in a trade — watching</div><div class="mut" style="font-size:12.5px">${!c.enabled?"Winston is paused.":lim.locked?"Locked: "+esc(lim.locked.why)+".":`Opens 9:30 · coach ideas from 9:31 · his own ideas from ${ownT} · last entry 3:30 · flat 3:50.`+passTxt}</div></div>`;
   const note=i=>`<div class="win43-note"><span class="tm">${esc(winET(i.at||i.created_at||""))}</span><span class="tk">${esc(i.ticker||"—")}</span><span class="rs">${esc(i.reason||"")}</span><span class="st ${String(i.source||"").startsWith("coach")?"coach":""}">${String(i.source||"").startsWith("coach")?"coach":"own"} · ${esc(i.status||"")}</span></div>`;
   const line=t=>{const o=t.status==="open",wn=+t.pnl_realistic>0,ls=+t.pnl_realistic<0,p=t.plan||{};
-    return `<div class="win43-li" data-wpop="trade" data-wid="${esc(String(t.id))}"><span class="win-chip ${o?"o":wn?"w":ls?"l":""}">${o?"OPEN":wn?"WIN":ls?"LOSS":"FLAT"}</span>
-      <div class="t"><b>${esc(t.label||t.ticker)}</b><span>${esc(winET(t.opened_at))}${o?" · open":" → "+esc(winET(t.closed_at))+" · "+esc(WIN_WHY[t.exit_reason]||t.exit_reason||"")} · ${esc(winSrc(t.source))}</span>${winStampList(t).length?`<div class="why">${esc(winStampList(t).join(" · "))}</div>`:""}</div>
-      <div class="p ${wn?"up":ls?"dn":""}">${o?"—":wm(+t.pnl_realistic)}</div></div>`};
+    return `<div class="win43-li" style="align-items:flex-start" data-wpop="trade" data-wid="${esc(String(t.id))}"><span class="win-chip ${o?"o":wn?"w":ls?"l":""}">${o?"OPEN":wn?"WIN":ls?"LOSS":"FLAT"}</span>
+      <div class="t"><b>${esc(t.label||t.ticker)}</b><span>${esc(winET(t.opened_at))}${o?" · open":" → "+esc(winET(t.closed_at))+" · "+esc(WIN_WHY[t.exit_reason]||t.exit_reason||"")} · ${esc(winSrc(t.source))}</span>${winStampList(t).length?`<div class="why">${esc(winStampList(t).join(" · "))}</div>`:""}${winPRHtml(t)}</div></div>`};   // v5.9.13: P&L moved onto the PAPER / REAL lines
   return `${winHead(j)}${winStrip(j)}${winLive(WIN.lc)}
     <div class="win43-main">
       <div class="dk-cardx win43-feed"><div class="dk-h">Winston now <b>he thinks only when something changed${td.ai?" · "+esc(td.ai.calls||0)+" looks today":""}</b><span class="x" data-wpop="report">all ${ideasDay.length||ideasAll.length} notes ↗</span></div>
