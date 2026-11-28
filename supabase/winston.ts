@@ -2982,6 +2982,8 @@ export async function handle(req: Request): Promise<Response> {
     if (req.method !== "POST") return json({ ok: false, error: "POST to kill" }, 405);
     return json({ ok: true, killed: true, ...(await liveKill(who, "kill link")) });
   }
+  // v5.9.14: Otto's position check (otto-proxy, no signed-in person) asks which open positions are Winston's. Read-only, same answer as the Desk gets.
+  if (fn === "live_ids" && cronAllowed(req)) return json({ ok: true, ids: await liveOptionIds() });
   const claims = jwtPayload(req.headers.get("authorization"));
   if (!deskUser(claims)) return json({ ok: false, error: "sign in with the Otto email" }, 401);
   try {

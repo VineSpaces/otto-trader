@@ -180,3 +180,16 @@ Deno.test("v5.9.9 live_ids: only open trades holding a real, unsold contract (th
   const ids = await X.liveOptionIds();
   assert(ids.join(",") === "coin", "only coin: " + ids.join(","));
 });
+
+Deno.test("v5.9.14 live_ids for Otto's position check: answered with the cron secret, refused without it, writes nothing", async () => {
+  seed(cfg);
+  await fakeDb("winston_trades", { method: "POST", body: JSON.stringify({ day: "2026-11-25", status: "open", ticker: "NVDA", option_id: "nvda-137p-1204", plan: { live: { entry_order_id: "E9", filled: true } } }) });
+  Deno.env.set("OTTO_CRON_SECRET", "0123456789abcdef-secret");
+  const before = JSON.stringify(TABLES);
+  const ask = (h: Record<string, string>) => X.handle(new Request("https://x/functions/v1/winston?fn=live_ids", { headers: h }));
+  const ok: any = await (await ask({ "x-otto-cron": "0123456789abcdef-secret" })).json();
+  assert(ok.ok && ok.ids.join(",") === "nvda-137p-1204", "his ids: " + JSON.stringify(ok));
+  assert((await ask({})).status === 401, "no secret, no sign-in: refused");
+  assert((await ask({ "x-otto-cron": "wrong-secret-0123456789" })).status === 401, "wrong secret: refused");
+  assert(JSON.stringify(TABLES) === before, "nothing written");
+});

@@ -152,8 +152,10 @@ const toolReply = (name: string, input: any) => [
 
 const pings: { kind: string; title: string; body: string }[] = [];
 let extractHook: ((text: string) => any[]) | null = null;
+let winstonHook: ((fn: string) => any) | null = null;   // v5.9.14: what Winston's own function answers (null = unreachable)
 (globalThis as any).__OTTO_TEST__ = {
   db: fakeDb, call: fakeCall,
+  winston: async (fn: string) => { if (!winstonHook) throw new Error("Winston unreachable in tests"); return winstonHook(fn); },
   brain: () => [{ call: { date: "2026-10-01", title: "t" }, rules: [], setups: [], levels: [], _transcript: "x" }],   // v3.24: Postgres only, no public file
   notify: (kind: string, title: string, body: string) => pings.push({ kind, title, body }),
   extract: (text: string) => (extractHook ? extractHook(text) : []),
@@ -172,7 +174,7 @@ const PRE326 = () => [{ key: "limits", value: { size_cap_on: false, kill_on: fal
 function reset() {
   T.otto_actions = []; T.otto_desk = []; T.otto_settings = PRE326(); T.otto_trades = []; T.otto_watch = []; T.otto_activity = [];
   T.otto_checks = []; T.otto_jason = []; T.otto_prep = []; T.otto_prep_imgs = []; T.otto_signal_batches = []; T.otto_signal_msgs = []; T.otto_signal_imgs = [];
-  orders = []; calls = []; claudeBodies.length = 0; claudeScript = null; callHook = null; extractHook = null; pings.length = 0;
+  orders = []; calls = []; claudeBodies.length = 0; claudeScript = null; callHook = null; extractHook = null; pings.length = 0; winstonHook = null;
   quote = { delta: "0.527", volume: 6911, open_interest: 2898 };
 }
 const deskText = () => T.otto_desk.map((r) => `[${r.author}] ${r.content}`).join("\n");
@@ -1114,7 +1116,7 @@ Deno.test("v3.21: the server sweep closes an armed trade when its rule is met â€
 
 Deno.test("v3.21: the scheduled position check can't close anything itself any more", async () => {
   const src = await Deno.readTextFile(new URL("../otto-proxy.ts", import.meta.url));
-  const pr = src.slice(src.indexOf("async function positionReview"), src.indexOf("async function positionReview") + 4000);
+  const p0 = src.indexOf("async function positionReview"), pr = src.slice(p0, src.indexOf("\n}\n", p0));   // v5.9.14: the whole function (it grew past 4000 chars)
   assert(/tools: \[TOOLS\[0\], \.\.\.mcpToolDefs\]/.test(pr) && /allowClose: false/.test(pr), "no close tool in the position check");
   assert(/await ruleSweep\(\)/.test(pr), "server rule sweep runs first");
 });
@@ -2802,4 +2804,77 @@ Deno.test("v5.9 OttoPilot in a member's room: their own practice ideas are taken
   assert(rooms[MEM]?.on === true && !rooms[HOUSE9], "only the member's room is on: " + JSON.stringify(Object.keys(rooms)));
   assert((await (M as any).autopilotRoute(null, HOUSE9)).on === false, "the house stays off");
   assert((await M.proposeAction(spyPut9(), "watcher")).status === "paper_wait", "house cards still wait for Josh");
+});
+
+/* ================= v5.9.14 (28 Nov 2026, Ifoma: "Build it"): Baby J's position check on Winston's trades =================
+   25 Nov replay: Winston's real NVDA 137P 12/04 (bought 10:41 AM at $5.89) sat in the shared Robinhood account. The check called it
+   a "call", said "no plan on file" every 15 minutes and asked Ifoma or Josh to decide. */
+const NVDA_P = { type: "long", quantity: "1.0000", option_id: "nvda-137p-1204", chain_symbol: "NVDA", average_price: "589.0000", expiration_date: "2026-12-04" };
+const NVDA_INS = { id: "nvda-137p-1204", chain_symbol: "NVDA", strike_price: "137.0000", type: "put", expiration_date: "2026-12-04" };
+const SPY_C = { type: "long", quantity: "1.0000", option_id: "spy-700c-1128", chain_symbol: "SPY", average_price: "310.0000", expiration_date: "2026-11-28" };
+const SPY_INS = { id: "spy-700c-1128", chain_symbol: "SPY", strike_price: "700.0000", type: "call", expiration_date: "2026-11-28" };
+const posHook = (pos: any[], ins: any[]) => (tool: string, args: any) =>
+  tool === "get_option_positions" ? { data: { positions: pos } }
+  : tool === "get_option_instruments" ? { data: { instruments: ins.filter((i) => String(args.ids) === i.id) } } : null;
+const reviewPrompt = () => String(claudeBodies[0]?.messages?.[0]?.content ?? "");
+const winLines = () => T.otto_desk.filter((r) => /is Winston's trade/.test(r.content));
+
+Deno.test("v5.9.14 contractLabel: put or call, strike and expiry straight from Robinhood's instrument; nothing guessed", () => {
+  assert(M.contractLabel(NVDA_INS)?.label === "NVDA 137P 12/04", "the put: " + JSON.stringify(M.contractLabel(NVDA_INS)));
+  assert(M.contractLabel(SPY_INS)?.label === "SPY 700C 11/28" && M.contractLabel(SPY_INS)?.type === "call", "a call");
+  assert(M.contractLabel({ ...NVDA_INS, strike_price: "142.5" })?.label === "NVDA 142.5P 12/04", "half strike kept");
+  assert(M.contractLabel({ ...NVDA_INS, type: "" }) === null && M.contractLabel({ ...NVDA_INS, strike_price: "" }) === null && M.contractLabel(null) === null, "missing type or strike = no label");
+});
+
+Deno.test("v5.9.14 replay 25 Nov: Winston's put is his. One plain Desk line (a put, his, nothing for Josh), no AI check, no repeat every 15 minutes, nothing sent", async () => {
+  reset(); setNow("2026-11-25T15:42:00Z");                 // 10:42 AM ET, a minute after his fill
+  callHook = posHook([NVDA_P], [NVDA_INS]);
+  winstonHook = (fn) => fn === "live_ids" ? { ok: true, ids: ["nvda-137p-1204"] } : null;
+  const r: any = await M.positionReview();
+  assert(r.skipped === "only Winston's trades", "skipped: " + JSON.stringify(r));
+  assert(claudeBodies.length === 0, "no AI check on his trade");
+  assert(winLines().length === 1, "one line: " + deskText());
+  const line = winLines()[0].content;
+  assert(line === "ðŸ¤– NVDA 137P 12/04 is Winston's trade. He manages it and closes it himself, on the Winston page. Nothing for Josh to decide.", line);
+  assert(!/\bcall\b|no plan on file|decide now|take profit/i.test(deskText().replace(line, "")), "nothing else said: " + deskText());
+  setNow("2026-11-25T15:58:00Z"); await M.positionReview();  // the next scheduled check
+  setNow("2026-11-25T16:14:00Z"); await M.positionReview("watcher alert");
+  assert(winLines().length === 1 && claudeBodies.length === 0, "said once a day, not every 15 minutes: " + deskText());
+  assert(!calls.some((c) => /^(place|cancel|review)_/.test(c.tool)), "no order tool");
+  assert(Object.keys(T).every((t) => !/^winston_/.test(t)), "Otto read none of Winston's tables");
+  setNow("2026-11-27T15:00:00Z"); await M.positionReview();  // still held on the next trading day: told again, once
+  assert(winLines().length === 2, "a new day gets the line again");
+});
+
+Deno.test("v5.9.14 Winston unreachable: the check runs, is told the real contract (a put), and that a position with no plan may be Winston's", async () => {
+  reset(); setNow("2026-11-25T15:42:00Z");
+  callHook = posHook([NVDA_P], [NVDA_INS]);                // winstonHook stays null = Winston can't be reached
+  await M.positionReview();
+  assert(claudeBodies.length === 1, "the check ran");
+  const p = reviewPrompt();
+  assert(p.includes('"contract":"NVDA 137P 12/04"') && p.includes('"type":"put"') && p.includes('"strike":137'), "real contract in the prompt: " + p.slice(0, 600));
+  assert(/never from the delta or a guess/.test(p), "told not to guess put or call");
+  assert(/could not reach Winston/.test(p) && /may be Winston's/.test(p) && /don't ask Ifoma or Josh to act on it/.test(p), "told it can't tell whose it is");
+  assert(winLines().length === 0, "no Winston line when it can't tell");
+});
+
+Deno.test("v5.9.14 mixed: Josh's own SPY call is checked; Winston's put is left out of the check and named as his", async () => {
+  reset(); setNow("2026-11-25T15:42:00Z");
+  callHook = posHook([NVDA_P, SPY_C], [NVDA_INS, SPY_INS]);
+  winstonHook = () => ({ ok: true, ids: ["nvda-137p-1204"] });
+  await M.positionReview();
+  assert(claudeBodies.length === 1, "the check ran for Josh's position");
+  const p = reviewPrompt(), list = p.slice(p.indexOf("options: "), p.indexOf("; shares:"));
+  assert(list.includes('"contract":"SPY 700C 11/28"') && !list.includes("nvda-137p-1204"), "only Josh's option is in the list: " + list);
+  assert(/Not yours to check: NVDA 137P 12\/04 is Winston's/.test(p) && /Don't mention it/.test(p), "his named as his: " + p.slice(0, 900));
+  assert(!/could not reach Winston/.test(p), "Winston answered, so no can't-tell note");
+  assert(winLines().length === 1, "his line on the Desk");
+});
+
+Deno.test("v5.9.14 Otto asks Winston through his function, never his tables (G4 still holds in the new code)", async () => {
+  const src = await Deno.readTextFile(new URL("../otto-proxy.ts", import.meta.url));
+  const a = src.indexOf("export async function winstonOwnedIds"), b = src.indexOf("export function winstonTradeLine", a);
+  const f = src.slice(a, b);
+  assert(a > 0 && /functions\/v1\/winston\?fn=live_ids/.test(f) && /"x-otto-cron": sec/.test(f), "calls fn=live_ids with the cron secret");
+  assert(!/winston_[a-z]/.test(f) && !/method:/.test(f), "no Winston table, a plain GET");
 });

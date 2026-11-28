@@ -5859,7 +5859,49 @@ export async function ruleSweep() {
   }
   return out;
 }
-async function positionReview(trigger: string | null = null) {
+/* ===================================================================== v5.9.14 (Ifoma 28 Nov 2026, "Build it")
+   Baby J's position check on Winston's trades. 25 Nov: Winston's NVDA 137P 12/04 was in the shared Robinhood account, the check
+   was given only option_id / symbol / qty / avg / exp, so it called the put a "call", said "no plan on file" every 15 minutes and
+   asked Ifoma or Josh to decide. Now: (1) each option is looked up on Robinhood, so the check is told the real contract (put or
+   call, strike, expiry); (2) Winston's own function is asked which positions are his (fn=live_ids, cron secret). Otto never reads
+   Winston's tables (test G4). His trades are taken out of the check and get one plain Desk line a day: his trade, managed and
+   closed by him on the Winston page, nothing for Josh to decide. If Winston can't be reached, the check is told that it can't
+   tell, and that a position with no plan on file may be his. */
+export function contractLabel(ins: any): { label: string; type: string | null; strike: number | null; exp: string | null } | null {
+  const sym = String(ins?.chain_symbol || "").toUpperCase(), strike = Number(ins?.strike_price), typ = String(ins?.type || "").toLowerCase();
+  if (!sym || !(strike > 0) || (typ !== "put" && typ !== "call")) return null;
+  const exp = ins?.expiration_date ? String(ins.expiration_date).slice(0, 10) : null;
+  return { label: `${sym} ${strike % 1 ? strike : Math.round(strike)}${typ === "put" ? "P" : "C"}${exp ? " " + exp.slice(5).replace("-", "/") : ""}`, type: typ, strike, exp };
+}
+export async function contractLabels(ids: string[]): Promise<Record<string, ReturnType<typeof contractLabel>>> {
+  const out: Record<string, ReturnType<typeof contractLabel>> = {};
+  await Promise.all(ids.map(async (id) => {
+    try {
+      const ins = (mcpJson(await call("rh", "get_option_instruments", { ids: id }))?.data?.instruments || []).find((x: any) => String(x?.id || id) === id) || null;
+      out[id] = contractLabel(ins);
+    } catch { out[id] = null; }
+  }));
+  return out;
+}
+// The option_ids of Winston's open real trades, from his own function. null = could not tell (never guessed).
+export async function winstonOwnedIds(): Promise<Set<string> | null> {
+  try {
+    let j: any;
+    if (TEST?.winston) j = await TEST.winston("live_ids");
+    else {
+      const base = Deno.env.get("SUPABASE_URL"), anon = Deno.env.get("SUPABASE_ANON_KEY"), sec = Deno.env.get("OTTO_CRON_SECRET") || "";
+      if (!base || !anon || sec.length < 16) return null;
+      const r = await withTimeout(fetch(`${base}/functions/v1/winston?fn=live_ids`, { headers: { apikey: anon, authorization: "Bearer " + anon, "x-otto-cron": sec } }), 6000, "Winston live ids");
+      if (!r.ok) return null;
+      j = await r.json();
+    }
+    return j?.ok && Array.isArray(j.ids) ? new Set(j.ids.map(String)) : null;
+  } catch { return null; }
+}
+export function winstonTradeLine(label: string): string {
+  return `🤖 ${label} is Winston's trade. He manages it and closes it himself, on the Winston page. Nothing for Josh to decide.`;
+}
+export async function positionReview(trigger: string | null = null) {
   const L = await getLimits();
   if (!L.auto_close || !rthNow()) return { ok: true, skipped: "off or market closed" };
   // v3.21: the card's own rules are checked on every call (cron minute or alert), by the server.
@@ -5880,12 +5922,27 @@ async function positionReview(trigger: string | null = null) {
   if (!opts.length && !shares.length) return { ok: true, skipped: "nothing open" };
   await db("otto_settings?on_conflict=key", { method: "POST", headers: { prefer: "resolution=merge-duplicates,return=minimal" },
     body: JSON.stringify({ key: "review_at", value: { at: Date.now() }, updated_by: "cron", updated_at: new Date().toISOString() }) }).catch(() => {});
+  // v5.9.14: the real contract for each option, and which ones are Winston's (asked of Winston, never read from his tables).
+  const [labels, owned] = await Promise.all([contractLabels(opts.map((p: any) => String(p.option_id))), winstonOwnedIds()]);
+  const lab = (p: any) => labels[String(p.option_id)]?.label || `${String(p.chain_symbol || "").toUpperCase()} option (contract not looked up)`;
+  const his = owned ? opts.filter((p: any) => owned.has(String(p.option_id))) : [];
+  const mine = opts.filter((p: any) => !his.includes(p));
+  if (his.length) {
+    const day = marketClock().date;
+    const seen = await setting("review_winston").catch(() => null);
+    const told: string[] = seen?.day === day && Array.isArray(seen.ids) ? seen.ids.map(String) : [];
+    const fresh = his.filter((p: any) => !told.includes(String(p.option_id)));
+    for (const p of fresh) await logDesk("system", "Otto", winstonTradeLine(lab(p)));
+    if (fresh.length) await putSetting("review_winston", { day, ids: [...told, ...fresh.map((p: any) => String(p.option_id))] }, "cron").catch(() => {});
+  }
+  if (!mine.length && !shares.length) return { ok: true, skipped: "only Winston's trades", winston: his.map(lab) };
   const plans = await db("otto_actions?" + OQ() + "select=title,plan,exit&exit->>state=eq.armed&limit=10").catch(() => []);
   const calls = await loadBrain();
   const sys = DESK_SYS.replace("{{RULES}}", alwaysOn(calls));
   const { tools: mcpToolDefs } = await deskTools();
   const prompt = `[Automatic position check — nobody typed this. ${trigger ? "TRIGGER: " + trigger : `Scheduled check (every ${Math.round(every / 60e3)} min).`}]
-Open in the Agentic account — options: ${JSON.stringify(opts.map((p: any) => ({ option_id: p.option_id, symbol: p.chain_symbol, qty: p.quantity, avg: p.average_price, exp: p.expiration_date })))}; shares: ${JSON.stringify(shares.map((p: any) => ({ symbol: p.symbol, qty: p.quantity })))}.
+Open in the Agentic account — options: ${JSON.stringify(mine.map((p: any) => ({ option_id: p.option_id, contract: lab(p), type: labels[String(p.option_id)]?.type || "unknown", strike: labels[String(p.option_id)]?.strike ?? null, symbol: p.chain_symbol, qty: p.quantity, avg: p.average_price, exp: p.expiration_date })))}; shares: ${JSON.stringify(shares.map((p: any) => ({ symbol: p.symbol, qty: p.quantity })))}.
+Each option's "contract" and "type" come from Robinhood: call it a put or a call exactly as given, never from the delta or a guess.${his.length ? ` Not yours to check: ${his.map(lab).join(", ")} ${his.length === 1 ? "is" : "are"} Winston's (he manages and closes his own trades on the Winston page). Don't mention ${his.length === 1 ? "it" : "them"}.` : ""}${owned ? "" : " Otto could not reach Winston to ask which positions are his. A position with no plan on file may be Winston's: say that, and don't ask Ifoma or Josh to act on it."}
 Plans on file: ${JSON.stringify((plans || []).map((r: any) => ({ title: r.title, setup: r.plan?.setup, direction: r.exit?.direction, tp1: r.exit?.tp1, wrong_if: r.exit?.wrong_if, stop_option: r.exit?.stop_option, option_id: r.exit?.option_id })))}.
 For each position: fetch the underlying's live price and recent 5-minute bars (and the option quote) and compare with its plan, the Otto Rules exits and the House Rules. You can't close anything: the server closes a trade on its card's own rules (wrong-if on the card's bar, TP1, 3:50 PM) by itself. If you'd get out for a reason that isn't one of those, write one short line per position saying so and why — Ifoma or Josh decide. Otherwise reply with exactly the single word HOLD and nothing else.${swept.length ? " Already handled by the server this minute: " + JSON.stringify(swept).slice(0, 400) : ""}`;
   const res = await runDesk({ msgs: [{ role: "user", content: prompt }], sys, tools: [TOOLS[0], ...mcpToolDefs], cs: chunksOf(calls),
